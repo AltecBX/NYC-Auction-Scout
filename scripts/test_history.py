@@ -93,6 +93,12 @@ class Prices(unittest.TestCase):
         self.assertEqual(H.classify_price("Estimated retail value"), "estimate")
         self.assertIsNone(H.classify_price(""))
 
+    def test_abbreviated_title_brands(self):
+        for doc in ("CERT OF TITLE-SLVG REBLD FLOOD", "SALVAGE (Massachusetts)", "CERT OF TITLE-SALVAGED", "RBLT TITLE"):
+            self.assertTrue(H.flags_of([{"src": "americamotors", "doc": doc}]), doc)
+        for doc in ("CLEAR TITLE", "Wait Title", "CERTIFICATE OF TITLE"):
+            self.assertFalse(H.flags_of([{"src": "americamotors", "doc": doc}]), doc)
+
     def test_bid_is_never_a_sale_price(self):
         r = H.parse_americamotors(am_page(VIN), VIN, "u")[0]
         self.assertEqual(r["bid"], 150)
@@ -144,7 +150,7 @@ class Research(unittest.TestCase):
             "bidhistory.info": (200, bh_page(VIN))})
         c = H.card(VIN, cache, True)
         self.assertEqual(c["st"], "found")
-        self.assertTrue(any("salvage certificate of title" in f["t"] for f in c["flags"]))
+        self.assertTrue(any("title document SALVAGE CERTIFICATE OF TITLE" in f["t"] for f in c["flags"]))
         self.assertTrue(any("Front Bumper: previous repair, substandard panel gaps/misaligned" in f["t"] for f in c["flags"]))
         auto = [e for e in c["ev"] if e["src"] == "autousa"]
         self.assertEqual(len(auto), 1)                     # two weekly runs, same reading, one event
@@ -169,6 +175,8 @@ class Research(unittest.TestCase):
         self.assertEqual(c["st"], "found")                 # earlier evidence survives the failed run
         am = next(s for s in c["src"] if s["id"] == "americamotors")
         self.assertEqual((am["st"], am["at"], am["fail"]["err"]), ("found", TODAY, "HTTP 503"))
+        bh = next(s for s in c["src"] if s["id"] == "bidhistory")
+        self.assertEqual(bh["fail"]["err"], "TimeoutError: slow")              # the reason is kept for the log
         self.assertEqual(sum("autousa" in u for u in web.calls), 1)   # 403 is not retried
 
     def test_changed_page_is_unavailable_not_empty(self):

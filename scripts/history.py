@@ -20,6 +20,7 @@ import urllib.error, urllib.parse, urllib.request
 
 UA = "NYCAuctionScout/1.0 (+https://github.com/AltecBX/NYC-Auction-Scout)"
 GAP = 3.0                  # seconds between two requests to the same site
+SITE_GAP = {"vehicles.autousa.pro": 6.0}   # it dropped connections from GitHub's runners at 3s, Oct 8 2026
 TRIES = 2                  # per request, only for timeouts and 5xx
 BREAKER = 3                # failed requests in a row before a site is skipped for the rest of the run
 RECHECK = {"found": 30, "none": 10, "error": 0}     # days before a source is asked again about a VIN
@@ -27,8 +28,8 @@ AUTOUSA_DETAILS = 2        # detail pages read per VIN (newest and oldest run)
 
 SOURCES = {"americamotors": "AmericaMotors", "autousa": "autousa.pro", "bidhistory": "BidHistory"}
 VIN_RX = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$")
-BRAND = re.compile(r"SALVAGE|REBUILT|REBUILDABLE|RECONSTRUCTED|FLOOD|JUNK|NON ?REPAIRABLE|NONREPAIRABLE|DESTRUCTION|"
-                   r"DISMANTL|PARTS ONLY|SCRAP|TOTAL LOSS|CERT OF DESTR|LEMON", re.I)
+BRAND = re.compile(r"SALVAGE|\bSLVG\b|REBUILT|\bREBLD\b|\bRBLT\b|REBUILDABLE|RECONSTRUCTED|FLOOD|JUNK|NON ?REPAIRABLE|"
+                   r"NONREPAIRABLE|DESTRUCTION|DISMANTL|PARTS ONLY|SCRAP|TOTAL LOSS|CERT OF DESTR|LEMON", re.I)
 NO_DAMAGE = re.compile(r"^(?:-|NONE|N/?A|NORMAL WEAR(?: ?& ?TEAR)?|UNKNOWN)?$", re.I)
 
 
@@ -42,7 +43,7 @@ class Fetcher:
     def __init__(self, gap=GAP, opener=None, sleep=time.sleep, clock=time.time):
         self.gap, self.sleep, self.clock = gap, sleep, clock
         self.open = opener or self._urlopen
-        self.last, self.fails = {}, {}
+        self.last, self.fails, self.err = {}, {}, {}
 
     @staticmethod
     def _urlopen(url):
@@ -63,14 +64,15 @@ class Fetcher:
             raise Unavailable("skipped after repeated failures this run")
         err = "no response"
         for i in range(TRIES):
-            wait = self.last.get(host, 0) + self.gap - self.clock()
+            wait = self.last.get(host, 0) + max(self.gap, SITE_GAP.get(host, 0) if self.gap else 0) - self.clock()
             if wait > 0:
                 self.sleep(wait)
             self.last[host] = self.clock()
             try:
                 code, body = self.open(url)
             except Exception as e:                          # timeout, DNS, reset
-                err = type(e).__name__
+                why = getattr(e, "reason", None) or e
+                err = f"{type(e).__name__}: {why}"[:80]
             else:
                 if "<title>Just a moment" in body[:3000] or "challenges.cloudflare.com" in body[:3000]:
                     err = "bot challenge"                   # never try to get past it
@@ -83,6 +85,7 @@ class Fetcher:
                     break
             self.sleep(4 * (i + 1))
         self.fails[host] = self.fails.get(host, 0) + 1
+        self.err[host] = err
         raise Unavailable(err)
 
 
@@ -152,7 +155,7 @@ def parse_americamotors(page, vin, url):
     dmg = [d for d in dmg if not NO_DAMAGE.match(d)]
     if dmg:
         rec["damage"] = dmg
-    if opts.get("Тип документа", "-") != "-":
+    if opts.get("Тип документа", "-") not in ("-", ""):
         rec["doc"] = opts["Тип документа"]
     if opts.get("Место стоянки", "-") != "-":
         rec["where"] = place(opts["Место стоянки"])
@@ -325,7 +328,7 @@ def research(cars, cache, minutes=20, fetcher=None, today=None, log=print):
             except Exception as e:                       # a parser bug must not stop the update
                 merge(entry, src, "error", f"parse error {type(e).__name__}", "", today)
     if asked:
-        down = [h for h in f.fails if f.down(h)]
+        down = [f"{h} ({f.err.get(h, '')})" for h in f.fails if f.down(h)]
         log(f"history: {asked} VINs checked, {found} source hits" + (f", unavailable: {', '.join(down)}" if down else ""))
     return cache
 
@@ -360,7 +363,7 @@ def flags_of(recs):
         where = ", ".join(x for x in (r.get("auction") and f"{r['auction']} lot {r['lot']}" if r.get("lot") else r.get("auction"),
                                       SOURCES[r["src"]]) if x)
         if r.get("doc") and BRAND.search(r["doc"]):
-            out.append({"lvl": "bad", "t": f"Prior listing reported {r['doc'].lower()} ({where})."})
+            out.append({"lvl": "bad", "t": f"Prior listing reported title document {r['doc']} ({where})."})
         for d in r.get("damage", []):
             lvl = "bad" if re.search(r"flood|water|burn|fire|frame|biohazard|undercarriage", d, re.I) else "warn"
             out.append({"lvl": lvl, "t": f"Prior listing reported damage: {d.lower()} ({where})."})
