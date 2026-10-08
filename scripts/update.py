@@ -462,6 +462,8 @@ def find_photo(year, make, model, body=""):
                                r"[\s\-_]?".join(map(re.escape, re.split(r"[^A-Za-z0-9]+", model))))
         results = {}
         us_only = split_market(make, model)
+        gen_rx = re.compile(r"[\s\-_]?".join(map(re.escape, re.split(r"[^A-Za-z0-9]+", model))) + r"\s*\(([^)]+)\)", re.I)
+        ref_gen = None     # generation codes Commons files of the exact year are filed under, e.g. R52
         for allow in ((False,) if us_only else (False, True)):
             for y in (year, year - 1, year + 1, year - 2, year + 2):
                 if y not in results:
@@ -470,6 +472,15 @@ def find_photo(year, make, model, body=""):
                 yr = re.compile(rf"(?<![\d\-.])(?:(?:19|20)\d\d\s*[\-–]\s*{y}|{y}(?:\s*[\-–]\s*(?:19|20)?\d\d)?)"
                                 rf"(?![\d.])[\s_,]+(?:[A-Za-z\-]+[\s_]+)?{lead}", re.I)
                 cands = []
+                if ref_gen is None and y == year:
+                    ref_gen = set()
+                    for p in results[y]:
+                        t0 = p["title"][5:]
+                        if yr.search(t0) and md_rx.search(t0):
+                            ref_gen |= {g.lower() for c in p.get("categories", []) for g in gen_rx.findall(c["title"])
+                                        if not re.search(r"\d{4}|in |rear|interior", g, re.I)}
+                    if DEBUG:
+                        print("    generation of", year, ":", ref_gen or "unknown")
                 for p in results[y]:
                     t = p["title"][5:].rsplit(".", 1)[0]
                     why = ("year" if not yr.search(t) else "model" if not md_rx.search(t)
@@ -488,6 +499,11 @@ def find_photo(year, make, model, body=""):
                         continue
                     if not allow and (ABROAD.search(cats) or NON_US.search(desc)):
                         continue
+                    if y != year and ref_gen:
+                        gens = {g.lower() for g in gen_rx.findall(cats)}
+                        if gens and not (gens & ref_gen):
+                            if DEBUG: print("      other generation:", gens)
+                            continue
                     if us_only and not (US_CUES.search(t) or US_CAT.search(cats) or US_CUES.search(desc)):
                         continue
                     lic = ii.get("extmetadata", {}).get("LicenseShortName", {}).get("value", "")
