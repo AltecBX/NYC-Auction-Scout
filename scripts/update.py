@@ -380,6 +380,24 @@ def title_ok(t, make, model, allow_overseas):
             return False
     return True
 
+_SPLIT_MARKET = {}
+
+def split_market(make, model):
+    """True when Wikipedia keeps a separate North America article, e.g. Honda Odyssey, whose overseas
+    namesake is a different vehicle. Those photos must show a US car."""
+    k = f"{make}|{model}"
+    if k not in _SPLIT_MARKET:
+        mk = make if make.upper() in ("BMW", "GMC") else make.title()
+        d = wm_api("en.wikipedia.org", {"action": "query", "titles": f"{mk} {model} (North America)", "redirects": 1})
+        pages = list(d.get("query", {}).get("pages", {}).values())
+        _SPLIT_MARKET[k] = (mk, bool(pages) and "missing" not in pages[0] and "invalid" not in pages[0])
+        time.sleep(1)
+    return _SPLIT_MARKET[k][1]
+
+US_CAT = re.compile(r"in the United States|in (?:New York|California|Texas|Florida|Virginia|Maryland|Washington|"
+                    r"Illinois|Michigan|Ohio|Pennsylvania|New Jersey|Massachusetts|Georgia|North Carolina|Arizona|"
+                    r"Colorado|Oregon|Minnesota|Wisconsin|Tennessee|Indiana|Missouri|Connecticut)|North America", re.I)
+
 def find_photo(year, make, model):
     """Exterior photo of this make, model and year. Order of preference:
     1. Commons file named with this model year right before the make or model, US version, front view first,
@@ -392,7 +410,8 @@ def find_photo(year, make, model):
         lead = r"(?:%s|%s)" % (r"[\s\-_]?".join(map(re.escape, re.split(r"[^A-Za-z0-9]+", mk))),
                                r"[\s\-_]?".join(map(re.escape, re.split(r"[^A-Za-z0-9]+", model))))
         results = {}
-        for allow in (False, True):
+        us_only = split_market(make, model)
+        for allow in ((False,) if us_only else (False, True)):
             for y in (year, year - 1, year + 1, year - 2, year + 2):
                 if y not in results:
                     results[y] = commons_search(f'"{y}" {make} {model}')
@@ -413,6 +432,8 @@ def find_photo(year, make, model):
                         continue
                     if not allow and (ABROAD.search(cats) or NON_US.search(desc)):
                         continue
+                    if us_only and not (US_CUES.search(t) or US_CAT.search(cats) or US_CUES.search(desc)):
+                        continue
                     lic = ii.get("extmetadata", {}).get("LicenseShortName", {}).get("value", "")
                     if re.search(r"fair use|non.free", lic, re.I):
                         continue
@@ -426,7 +447,8 @@ def find_photo(year, make, model):
 
 def wiki_lead_photo(make, model):
     mk = make if make.upper() in ("BMW", "GMC") else make.title()
-    for title in (f"{mk} {model}", f"{mk} {model.split()[0]}" if " " in model else None):
+    first = f"{mk} {model} (North America)" if split_market(make, model) else None
+    for title in (first, f"{mk} {model}", f"{mk} {model.split()[0]}" if " " in model else None):
         if not title:
             continue
         d = wm_api("en.wikipedia.org", {"action": "query", "titles": title, "redirects": 1,
