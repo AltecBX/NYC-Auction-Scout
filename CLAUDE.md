@@ -9,7 +9,9 @@ Jerry's site for NYC Department of Finance (City Sheriff) vehicle auctions. He u
 - `.github/workflows/update.yml` runs it at 6:07am and 6:07pm New York and commits `data/`. Manual run: Actions tab, "Update auction lists", Run workflow.
 - Site: `index.html` + `styles.css` + `app.js`, static, no build step, served by GitHub Pages from `main` root. Reads `data/auctions.json`. Stars and notes live in localStorage. `manifest.webmanifest` lets Jerry add it to his iPhone home screen.
 - Raw parsed rows live in `data/raw.json`; cars are rebuilt from caches on every run, so new photos and stats show up without re-reading PDFs.
-- Stock photos: Wikimedia Commons file whose title has the model year right before the make or model (titles ending in a photo date do not count). Falls back up to 2 years and the card says so. US market photos are preferred. Credit line (author, license) is shown under Details, keep it. `PHOTO_BUDGET` caps new lookups per run.
+- Stock photos (`find_photo` in update.py, `scripts/view_check.py`): Wikimedia Commons file whose title has the model year right before the make or model (photo dates in titles never count). Rejects interior, rear, detail shots by title, categories and description, sibling models (Accord Crosstour for Accord, via vPIC model list), body clashes (wagon for a sedan), and other generations when Commons categories say so. Prefers US cars; models with a separate Wikipedia "(North America)" article must show a US car. Tries exact year, then up to 2 years away, then overseas versions, then the Wikipedia lead photo. A CLIP model (open_clip ViT-B-32, CPU, installed in the workflow) must call the picture a front view; side or rear only as a last resort. Card caption says which year the photo is. Credit line (author, license) is shown under Details, keep it. `PHOTO_BUDGET` and `PHOTO_MINUTES` cap each run; bump `PHOTO_VERSION` to redo all picks.
+- Test photo picks without saving: Actions, "Update auction lists", Run workflow, fill photo_test like `2014|Nissan|Pathfinder|SUV,2013|Toyota|Sienna|Minivan`. The log prints every candidate and why it was kept or dropped.
+- Wikimedia rate limits: only request thumbnail widths the API returns (960px); other sizes get HTTP 429. Keep the 1s sleeps.
 - NHTSA crash stars come from api.nhtsa.gov/SafetyRatings, best variant match by body and drive. Standard safety equipment comes from the vPIC decode.
 
 ## Design
@@ -33,3 +35,12 @@ Cash only at the winning bid, no keys, as is, liens stay with the vehicle and th
 - Plain, short copy. No filler.
 - Correctness over features. Never show guessed data (mileage, color, value) as fact. Label model level data as model level.
 - Test parser changes against a known list: every VIN must pass the check digit, and lot counts must match the PDF.
+
+## Views on the site
+- This sale (one auction), All sales (every upcoming lot, filter by body or borough), Favorites (starred lots from any sale). Search with no match in the current sale switches to All sales.
+
+## Open work (agreed with Jerry, not built yet)
+- Research per auction: VIN history (old auction listings, damage photos, mileage), known expensive problems for the exact engine and transmission, overlooked value (trim, equipment), conservative price range, and a short auction day target list with walk away price. Every claim needs a dated source; no result means "history unknown". Plan: a Claude scheduled task the evening before each sale writes `data/research/<auction id>.json`, shown on a Targets tab.
+- Waiting on Jerry: whether to pay for VIN history and market comps data, and whether research covers only the Bronx or every borough.
+- Complaint counts can be 0 when NHTSA names a model differently from the VIN decode. Match names against NHTSA's own model list before using counts for research.
+- Known photo gaps: about 10 lots (box trucks, a bus, scooters, a 1983 Oldsmobile) have no photo. A closest year photo can be the previous generation when Commons has no generation category (2014 Pathfinder shows a 2012).
