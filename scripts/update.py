@@ -10,6 +10,9 @@ from pathlib import Path
 
 import pdfplumber
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import view_check  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 OUT = DATA / "auctions.json"
@@ -294,7 +297,7 @@ def ncap(make, model, year, body, drive, cache):
 
 # ---------- stock photo (Wikimedia Commons, then Wikipedia) ----------
 
-PHOTO_VERSION = 3
+PHOTO_VERSION = 4
 PHOTO_BAD = re.compile(r"interior|\bengine|\bdash|cockpit|\brear\b|(?<!hatch)\bback\b|badge|emblem|\blogo|\bwheels?\b(?!base)|"
                        r"\brims?\b|\bseats?\b|\btrunk|\bboot\b|crash|wreck|damag|tail ?light|head ?light|steering|odometer|"
                        r"gauge|instrument|\bconsole|detail|\bgrille|\bhood\b|mirror|police|taxi|\bfire\b|ambulance|"
@@ -406,11 +409,36 @@ BODY_CLASH = {"Sedan": r"wagon|tourer|touring|estate|avant|sportback|kombi|varia
               "Pickup": r"\bsuv\b|van\b", "Convertible": r"sedan|saloon|wagon"}
 
 def find_photo(year, make, model, body=""):
-    """Exterior photo of this make, model and year. Order of preference:
-    1. Commons file named with this model year right before the make or model, US version, front view first,
-       then up to 2 years away, then overseas versions. Photo dates in titles never count as model years.
-       Interior, rear and detail shots are rejected using the title, the file's categories and its description.
-    2. The lead photo of the model's Wikipedia article (labeled: generation may differ)."""
+    """Exterior photo of this make, model and year, front view whenever one exists. Order of preference:
+    1. Commons file named with this model year right before the make or model, US version, then up to 2 years
+       away, then overseas versions. Photo dates in titles never count as model years. Interior, rear and
+       detail shots are rejected using the title, the file's categories and its description.
+    2. The lead photo of the model's Wikipedia article (labeled: year may differ).
+    Each pick is looked at by a small image model (view_check.py) and only a front view is accepted.
+    If no front view exists anywhere, the best side or rear exterior is used rather than no photo."""
+    checks = {"n": 0}
+    fallback = []          # exterior shots that are not a front view, best first
+
+    def judge(entry):
+        """True to accept now. Saves non front exteriors as a fallback."""
+        if not view_check.available():
+            return True
+        if checks["n"] >= 10:
+            return False
+        checks["n"] += 1
+        v = view_check.view_of(entry["img"], WIKI_UA)
+        time.sleep(1)
+        if DEBUG:
+            print("      view:", v, entry["t"])
+        if v is None:
+            return False
+        entry["view"] = v[0]
+        if v[0] == "front":
+            return True
+        if v[0] in ("side", "rear"):
+            fallback.append(entry)
+        return False
+
     mk = make.replace("-Benz", "")
     md_rx = word_rx(model)
     if md_rx:
@@ -425,7 +453,7 @@ def find_photo(year, make, model, body=""):
                     time.sleep(1)
                 yr = re.compile(rf"(?<![\d\-.])(?:(?:19|20)\d\d\s*[\-–]\s*{y}|{y}(?:\s*[\-–]\s*(?:19|20)?\d\d)?)"
                                 rf"(?![\d.])[\s_,]+(?:[A-Za-z\-]+[\s_]+)?{lead}", re.I)
-                best = None
+                cands = []
                 for p in results[y]:
                     t = p["title"][5:].rsplit(".", 1)[0]
                     why = ("year" if not yr.search(t) else "model" if not md_rx.search(t)
@@ -441,7 +469,6 @@ def find_photo(year, make, model, body=""):
                     cats = " ".join(c["title"] for c in p.get("categories", []))
                     desc = strip_html(ii.get("extmetadata", {}).get("ImageDescription", {}).get("value"))[:400]
                     if VIEW_BAD.search(cats) or VIEW_BAD.search(desc):
-                        if DEBUG: print("      view rejected:", (VIEW_BAD.search(cats) or VIEW_BAD.search(desc)).group(0))
                         continue
                     if not allow and (ABROAD.search(cats) or NON_US.search(desc)):
                         continue
@@ -451,15 +478,23 @@ def find_photo(year, make, model, body=""):
                     if re.search(r"fair use|non.free", lic, re.I):
                         continue
                     sc = (5 * bool(FRONT.search(t) or FRONT.search(desc)) + 2 * bool(re.match(rf"\W*{y}", t))
-                          + 2 * bool(US_CUES.search(t)) - len(t) / 60)
-                    if best is None or sc > best[0]:
-                        best = (sc, photo_entry(ii, y, t, "near" if y != year else "exact"))
-                if best:
-                    return best[1]
+                          + 2 * bool(US_CUES.search(t)) + 1.5 * bool(re.search(r"\b0?1\)?$", t))
+                          - 2 * bool(re.search(r"\b0?2\)?$", t)) - len(t) / 60)
+                    cands.append((sc, photo_entry(ii, y, t, "near" if y != year else "exact")))
+                for sc, entry in sorted(cands, key=lambda x: -x[0])[:3]:
+                    if judge(entry):
+                        return entry
     alias = series_alias(make, model)
     if alias:
-        return find_photo(year, make, alias, body)
-    return wiki_lead_photo(make, model)
+        got = find_photo(year, make, alias, body)
+        if got:
+            return got
+    wiki = wiki_lead_photo(make, model)
+    if wiki and judge(wiki):
+        return wiki
+    if fallback:
+        return sorted(fallback, key=lambda e: e.get("view") != "side")[0]
+    return wiki
 
 def series_alias(make, model):
     """BMW and Mercedes VINs decode to model numbers (740i, 328xi, E350) that photos rarely use."""
@@ -522,6 +557,8 @@ def photos_for(combos, cache):
             print("  photo lookup failed", k, e)
             continue
         cache[k] = ph if ph else {"none": today.isoformat(), "v": PHOTO_VERSION}
+        if ph and view_check.available() and not ph.get("view"):
+            ph["view"] = "unchecked"
     if done:
         found = sum(1 for y, mk, md, _ in combos if cache.get(f"{y}|{mk}|{md}", {}).get("v") == PHOTO_VERSION
                     and "img" in cache[f"{y}|{mk}|{md}"])
@@ -614,7 +651,7 @@ def build_car(r, vc, mc, pc, nc):
             car["stars"] = int(st["stars"]); car["starsFor"] = st["desc"]
         ph = pc.get(f'{year}|{car["make"]}|{car["model"]}')
         if ph and "img" in ph:
-            car["photo"] = {k: ph[k] for k in ("img", "page", "y", "by", "lic", "k") if k in ph}
+            car["photo"] = {k: ph[k] for k in ("img", "page", "y", "by", "lic", "k", "view") if k in ph}
     car = {k: v for k, v in car.items() if v not in ("", None, [])}
     car.setdefault("lien", ""); car.setdefault("flags", [])
     return car
