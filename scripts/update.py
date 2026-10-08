@@ -306,6 +306,11 @@ VIEW_BAD = re.compile(r"interior|interieur|intérieur|innen|cockpit|dashboard|ar
                       r"trunk|cargo area|boot space|engine bay|engine compartment|motorraum|under the hood|"
                       r"rear view|rear-view|rear three|rear 3/4|rear quarter|rear left|rear right|from behind|"
                       r"back view|heckansicht|rückansicht|arrière|tail ?lights?|wheels? of|close.?up|detail", re.I)
+ABROAD = re.compile(r"\bin (?:the )?(?:United Kingdom|England|Scotland|Wales|Ireland|Japan|Germany|France|Italy|Spain|"
+                    r"Netherlands|Belgium|Poland|Russia|China|Taiwan|Hong Kong|Korea|South Korea|Thailand|Malaysia|Indonesia|"
+                    r"Philippines|India|Australia|New Zealand|Brazil|Mexico|Argentina|Chile|Colombia|Israel|Turkey|Austria|"
+                    r"Switzerland|Sweden|Norway|Denmark|Finland|Czech Republic|Hungary|Portugal|Greece|Ukraine|South Africa|"
+                    r"Singapore|Vietnam|Pakistan|Egypt|Iran|Saudi Arabia|United Arab Emirates|Romania|Bulgaria|Serbia|Croatia)\b")
 FRONT = re.compile(r"front|frontal|frontansicht|vorne|avant|delantera|three.quarter|3/4|\bFL\b|\bFR\b", re.I)
 WIKI_HEADERS = {"User-Agent": WIKI_UA}
 # US market photos look like the cars at a NYC auction; overseas versions of the same name can differ a lot
@@ -405,6 +410,8 @@ def find_photo(year, make, model):
                     cats = " ".join(c["title"] for c in p.get("categories", []))
                     desc = strip_html(ii.get("extmetadata", {}).get("ImageDescription", {}).get("value"))[:400]
                     if VIEW_BAD.search(cats) or VIEW_BAD.search(desc):
+                        continue
+                    if not allow and (ABROAD.search(cats) or NON_US.search(desc)):
                         continue
                     lic = ii.get("extmetadata", {}).get("LicenseShortName", {}).get("value", "")
                     if re.search(r"fair use|non.free", lic, re.I):
