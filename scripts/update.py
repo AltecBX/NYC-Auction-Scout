@@ -4,7 +4,7 @@ Run: python scripts/update.py            (normal daily run)
      python scripts/update.py --force    (re-parse every PDF even if unchanged)
      python scripts/update.py --pdf FILE --id auction-100826-bronx   (parse a local PDF, for testing)
 """
-import argparse, datetime as dt, hashlib, io, json, re, sys, time
+import argparse, datetime as dt, hashlib, io, json, os, re, sys, time
 import urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 
@@ -312,47 +312,82 @@ def word_rx(s):
     parts = [re.escape(x) for x in re.split(r"[^A-Za-z0-9]+", s) if x]
     return re.compile(r"(?<![a-z0-9])" + r"[\s\-_]?".join(parts) + r"(?![a-z0-9])", re.I) if parts else None
 
+_MAKE_MODELS = {}
+
+def other_models(make, model):
+    """Longer model names from the same make that start with this model, e.g. Rogue Sport for Rogue,
+    Accord Crosstour for Accord. A photo titled with one of those is a different vehicle."""
+    mk = make.lower()
+    if mk not in _MAKE_MODELS:
+        try:
+            res = http(f"https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMake/{urllib.parse.quote(mk)}?format=json")
+            _MAKE_MODELS[mk] = {r["Model_Name"].strip() for r in res.get("Results", [])}
+        except Exception:
+            _MAKE_MODELS[mk] = set()
+    base = model.lower()
+    return [m for m in _MAKE_MODELS[mk] if m.lower().startswith(base + " ") and len(m) > len(model)]
+
+def title_ok(t, make, model, allow_overseas):
+    if PHOTO_BAD.search(t):
+        return False
+    if not allow_overseas and NON_US.search(t):
+        return False
+    for om in other_models(make, model):
+        rx = word_rx(om)
+        if rx and rx.search(t):
+            return False
+    return True
+
 def find_photo(year, make, model):
     """Commons photo whose file name says this model year right before the make or model.
-    Titles like 'Honda Accord 2022-01-16' carry the photo date, not the model year, so they never match."""
+    Titles like 'Honda Accord 2022-01-16' carry the photo date, not the model year, so they never match.
+    Order of preference: US market shot of the exact year, then up to 2 years away, then overseas versions."""
     mk = make.replace("-Benz", "")
     md_rx = word_rx(model)
     if not md_rx:
         return None
     lead = r"(?:%s|%s)" % (r"[\s\-_]?".join(map(re.escape, re.split(r"[^A-Za-z0-9]+", mk))),
                            r"[\s\-_]?".join(map(re.escape, re.split(r"[^A-Za-z0-9]+", model))))
-    for y in (year, year - 1, year + 1, year - 2, year + 2):
-        yr = re.compile(rf"(?<![\d\-.])(?:(?:19|20)\d\d\s*[\-–]\s*{y}|{y}(?:\s*[\-–]\s*(?:19|20)?\d\d)?)"
-                        rf"(?![\d.])[\s_,]+(?:[A-Za-z\-]+[\s_]+)?{lead}", re.I)
-        best = None
-        for p in commons_search(f'"{y}" {make} {model}'):
-            t = p["title"][5:].rsplit(".", 1)[0]
-            if not yr.search(t) or not md_rx.search(t) or PHOTO_BAD.search(t):
-                continue
-            ii = p["imageinfo"][0]
-            if ii.get("width", 0) < ii.get("height", 1) * 1.15 or ii.get("width", 0) < 640:
-                continue
-            sc = (3 * bool(re.search(r"front|\bfr\b|3/4|three.quarter", t, re.I)) + 2 * bool(re.match(rf"\W*{y}", t))
-                  + 2 * bool(US_CUES.search(t)) - 4 * bool(NON_US.search(t)) - len(t) / 60)
-            if best is None or sc > best[0]:
-                m = ii.get("extmetadata", {})
-                by = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.get("Artist", {}).get("value", ""))).strip()
-                best = (sc, {"img": ii["thumburl"], "page": ii["descriptionurl"], "y": y, "by": by[:60],
-                             "lic": m.get("LicenseShortName", {}).get("value", ""), "t": t[:120]})
-        time.sleep(1)
-        if best:
-            return best[1]
+    results = {}
+    for allow in (False, True):
+        for y in (year, year - 1, year + 1, year - 2, year + 2):
+            if y not in results:
+                results[y] = commons_search(f'"{y}" {make} {model}')
+                time.sleep(1)
+            yr = re.compile(rf"(?<![\d\-.])(?:(?:19|20)\d\d\s*[\-–]\s*{y}|{y}(?:\s*[\-–]\s*(?:19|20)?\d\d)?)"
+                            rf"(?![\d.])[\s_,]+(?:[A-Za-z\-]+[\s_]+)?{lead}", re.I)
+            best = None
+            for p in results[y]:
+                t = p["title"][5:].rsplit(".", 1)[0]
+                if not yr.search(t) or not md_rx.search(t) or not title_ok(t, make, model, allow):
+                    continue
+                ii = p["imageinfo"][0]
+                if ii.get("width", 0) < ii.get("height", 1) * 1.15 or ii.get("width", 0) < 640:
+                    continue
+                sc = (3 * bool(re.search(r"front|\bfr\b|3/4|three.quarter", t, re.I)) + 2 * bool(re.match(rf"\W*{y}", t))
+                      + 2 * bool(US_CUES.search(t)) - len(t) / 60)
+                if best is None or sc > best[0]:
+                    m = ii.get("extmetadata", {})
+                    by = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.get("Artist", {}).get("value", ""))).strip()
+                    best = (sc, {"img": ii["thumburl"], "page": ii["descriptionurl"], "y": y, "by": by[:60],
+                                 "lic": m.get("LicenseShortName", {}).get("value", ""), "t": t[:120]})
+            if best:
+                return best[1]
     return None
 
 def photos_for(combos, cache):
     today = dt.date.today()
+    budget = int(os.environ.get("PHOTO_BUDGET") or PHOTO_BUDGET)
     done = 0
     for y, mk, md in combos:
         k = f"{y}|{mk}|{md}"
         hit = cache.get(k)
-        if hit and ("img" in hit or (today - dt.date.fromisoformat(hit["none"])).days < PHOTO_RETRY_DAYS):
+        if hit and "img" in hit and title_ok(hit.get("t", ""), mk, md, True) \
+                and not (NON_US.search(hit.get("t", "")) and not hit.get("ov")):
+            continue          # still good under the current rules
+        if hit and "none" in hit and (today - dt.date.fromisoformat(hit["none"])).days < PHOTO_RETRY_DAYS:
             continue
-        if done >= PHOTO_BUDGET:
+        if done >= budget:
             break
         done += 1
         try:
@@ -360,6 +395,8 @@ def photos_for(combos, cache):
         except Exception as e:
             print("  photo lookup failed", k, e)
             continue
+        if ph and NON_US.search(ph["t"]):
+            ph["ov"] = 1      # overseas version was the only match, keep it and stop asking
         cache[k] = ph if ph else {"none": today.isoformat()}
     if done:
         found = sum(1 for y, mk, md in combos if "img" in cache.get(f"{y}|{mk}|{md}", {}))
