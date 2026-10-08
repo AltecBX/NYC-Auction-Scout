@@ -1,6 +1,6 @@
 # NYC Auction Scout
 
-Live site: https://altecbx.github.io/nyc-auction-scout/
+Live site: https://altecbx.github.io/NYC-Auction-Scout/
 
 NYC Finance vehicle auction lists with every VIN decoded (model, trim, engine, drive), lien flags, and NHTSA recall and complaint counts. Updates itself twice a day from the city's auctions page.
 

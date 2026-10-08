@@ -97,8 +97,6 @@ def date_from_id(aid):
 # ---------- PDF parsing ----------
 
 ROW = re.compile(r"^\s*(\d{1,3})\s+(\d{4})\s+(.+)$")
-HEADER_WORDS = re.compile(r"\b(YEAR|MAKE|PLATE|LIENHOLDER|VEHICLE ID|MARSHAL|SHERIFF|AUCTION|PAGE|NOTICE|"
-                          r"PUBLIC SALE|EXECUTION|CITY OF NEW YORK|STREET|AVENUE|TERMS|CASH|BIDDER)\b")
 
 def split_row(rest):
     t = rest.split()
@@ -110,6 +108,12 @@ def split_row(rest):
         if len(tok) == 17 and tok.isalnum() and any(c.isdigit() for c in tok):
             vi, vin, after = i, tok.upper(), t[i + 1:]
             break
+    if vi is None:  # VIN typed with the wrong length: take the token right after the 2 letter state
+        for i in range(2, len(t)):
+            if re.fullmatch(r"[A-Z]{2}", t[i - 1]) and t[i].isalnum() and 10 <= len(t[i]) <= 19 \
+                    and any(c.isdigit() for c in t[i]):
+                vi, vin, after = i, t[i].upper(), t[i + 1:]
+                break
     if vi is None or vi < 2:
         return None
     state = t[vi - 1] if re.fullmatch(r"[A-Z]{2}", t[vi - 1]) else ""
@@ -117,6 +121,42 @@ def split_row(rest):
     plate = t[pi] if pi >= 1 else ""
     make = " ".join(t[:pi]) if pi >= 1 else " ".join(t[:vi])
     return dict(make=make, plate=plate, st=state, vin=vin, lien=" ".join(after))
+
+# words that start the second half of a lienholder name wrapped inside its cell
+WRAP_START = {"FINANCIAL", "FINANCE", "FIANANCE", "SERVICES", "SERVICE", "SERV", "SVCS", "ACCEPTANCE", "ACCEPTABLE",
+              "CORP", "CORP.", "CORPORATION", "LLC", "LLC.", "INC", "INC.", "CO", "CO.", "CREDIT", "UNION", "FUNDING",
+              "AUTO", "LENDING", "BANK", "FCU", "GROUP", "NETWORK", "FEDERAL", "MOTOR", "TITLE", "TITTLE", "AND",
+              "TRUST", "TRUS", "COMMERCIAL", "USA", "NA", "LEASING", "TITLING", "HONDA", "LTD", "FIN"}
+# make names that wrap in the narrow MAKE column and land on their own line
+MAKE_TAILS = {"ROMEO", "ROVER", "BENZ", "BEN", "LAND", "ALFA", "ROLLS", "ROYCE", "ASTON", "MARTIN"}
+FOOTER = re.compile(r"\b\d{5}\b|NEW YORK|PARKING|DEPARTMENT|PEOPLE|STATE OF|VIOLATIONS|MOTOR VEHICLES|DATED|"
+                    r"SHERIFF|MARSHAL|AUCTION|PAGE|LIENHOLDER|PLATE|VEHICLE ID|NOTICE|CITY OF")
+
+def join_lien(cur, frag):
+    first = frag.split()[0].upper()
+    if first in WRAP_START or len(cur.split()) == 1:
+        return cur + " " + frag
+    return cur + " / " + frag
+
+ADDR = re.compile(r"\b\d{2,5}\s+(?:[A-Z][A-Za-z']*\s+){1,3}(?:STREET|ST|AVENUE|AVE|BOULEVARD|BLVD|ROAD|RD|PLACE|PL)\b\.?"
+                  r"(?:,?\s*(?:BRONX|BROOKLYN|QUEENS|STATEN ISLAND|NEW YORK|[A-Z][a-z]+(?: [A-Z][a-z]+)?))?(?:,?\s*N\.?\s?Y\.?)?(?:,?\s*\d{5})?", re.I)
+
+def nice(s):
+    s = " ".join(w if re.fullmatch(r"(N\.?Y\.?|NY)", w, re.I) else w.capitalize() for w in s.split())
+    return re.sub(r"'S\b", "'s", s.replace("N.y.", "N.Y."))
+
+def find_location(flat):
+    for m in ADDR.finditer(flat):
+        if re.search(r"ADAMS|JORALEMON", m.group(0), re.I):
+            continue
+        addr = m.group(0).strip(" ,.")
+        pre = flat[max(0, m.start() - 60):m.start()]
+        venue = pre.rsplit(" at ", 1)[-1].strip(" ,") if " at " in pre.lower() else ""
+        venue = re.split(r"\bat\b", venue, flags=re.I)[-1].strip(" ,")
+        if not venue or re.search(r"\d{1,2}:\d{2}|o.?clock|morning|noon", venue, re.I) or len(venue) > 35:
+            venue = ""
+        return {"location": nice((venue + ", " if venue else "") + addr)}
+    return {}
 
 def parse_pdf(blob):
     with pdfplumber.open(io.BytesIO(blob)) as pdf:
@@ -133,11 +173,12 @@ def parse_pdf(blob):
             last = rows[n]
             continue
         s = line.strip()
-        # wrapped lienholder: short all caps line right after a row that already had a lienholder
-        if (last and last["lien"] and s and len(s) <= 45 and s.upper() == s
-                and re.fullmatch(r"[A-Z0-9&.,'/ \-]+", s) and not HEADER_WORDS.search(s)):
-            last["lien"] += " / " + s
-        last = None if not s else last
+        ok = (last is not None and last["lien"] and s and len(s) <= 45 and s.upper() == s
+              and re.fullmatch(r"[A-Z0-9&.,'/ \-]+", s) and not FOOTER.search(s) and s not in MAKE_TAILS)
+        if ok:
+            last["lien"] = join_lien(last["lien"], s)
+        elif s:
+            last = None   # anything else ends the row (footers, headers, make fragments)
     meta = {}
     m = re.search(rf"({MONTHS})\s+(\d{{1,2}}),?\s+(\d{{4}})", text, re.I)
     if m:
@@ -145,14 +186,12 @@ def parse_pdf(blob):
             meta["date"] = dt.datetime.strptime(f"{m.group(1).title()} {m.group(2)} {m.group(3)}", "%B %d %Y").date().isoformat()
         except ValueError:
             pass
-    m = re.search(r"(\d{1,2}:\d{2})\s*([AP])\.?\s*M", text, re.I)
+    flat = re.sub(r"\s+", " ", text)
+    m = re.search(r"(\d{1,2}:\d{2})\s*(?:o.?clock)?\s*(?:in\s+the\s+)?(A\.?\s?M\b|P\.?\s?M\b|morning|afternoon|noon)", flat, re.I)
     if m:
-        meta["time"] = m.group(1) + m.group(2).lower() + "m"
-    for line in text.splitlines():
-        if re.search(r"\b\d{2,5}\s+[A-Za-z]+\s+(Street|St\.?|Avenue|Ave\.?|Boulevard|Blvd\.?|Road|Rd\.?)\b", line, re.I) \
-                and not re.search(r"adams", line, re.I):
-            meta["location"] = re.sub(r"\s+", " ", line).strip(" ,.")
-            break
+        ap = m.group(2).lower()
+        meta["time"] = m.group(1) + ("am" if ap.startswith("a") or ap == "morning" else "pm")
+    meta.update(find_location(flat))
     return [rows[k] for k in sorted(rows)], meta
 
 # ---------- NHTSA ----------
