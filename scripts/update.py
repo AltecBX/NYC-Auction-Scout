@@ -292,37 +292,58 @@ def ncap(make, model, year, body, drive, cache):
     cache[k] = out
     return out
 
-# ---------- stock photo (Wikimedia Commons) ----------
+# ---------- stock photo (Wikimedia Commons, then Wikipedia) ----------
 
+PHOTO_VERSION = 3
 PHOTO_BAD = re.compile(r"interior|engine|dash|cockpit|rear|back|badge|emblem|logo|wheel|rim\b|seat|trunk|boot|crash|"
                        r"wreck|damag|tail ?light|head ?light|steering|odometer|gauge|instrument|console|detail|grille|"
                        r"hood|mirror|police|taxi|\bcab\b|fire|ambulance|race|racing|rally|nascar|drift|modified|tuned|"
                        r"custom|concept|prototype|interieur|innenraum|heck|\bmotor\b|cutaway|chassis|model car|toy|"
-                       r"lego|diecast|die.cast|scale|sketch|drawing", re.I)
-
+                       r"lego|diecast|die.cast|scale|sketch|drawing|inside|cabin|cargo|armatur|salpicadero|habitacle|"
+                       r"intérieur|interno|innen|tachometer|speedometer|key\b|door panel|underside|tire|tyre", re.I)
+# checked against the file's categories and description, where words like "rear-wheel drive" are harmless
+VIEW_BAD = re.compile(r"interior|interieur|intérieur|innen|cockpit|dashboard|armaturen|steering wheel|\bseats?\b|"
+                      r"trunk|cargo area|boot space|engine bay|engine compartment|motorraum|under the hood|"
+                      r"rear view|rear-view|rear three|rear 3/4|rear quarter|rear left|rear right|from behind|"
+                      r"back view|heckansicht|rückansicht|arrière|tail ?lights?|wheels? of|close.?up|detail", re.I)
+FRONT = re.compile(r"front|frontal|frontansicht|vorne|avant|delantera|three.quarter|3/4|\bFL\b|\bFR\b", re.I)
+WIKI_HEADERS = {"User-Agent": WIKI_UA}
 # US market photos look like the cars at a NYC auction; overseas versions of the same name can differ a lot
 US_CUES = re.compile(r"NHTSA|\b\d\d-\d\d-\d{4}\b|NYIAS|NYAS|New York|Washington|\bDC\b|Chicago|Detroit|NAIAS|LA Auto|"
                      r"\bUS\b|USA|America|front (?:left|right)", re.I)
 NON_US = re.compile(r"Euro|JDM|\bcc\b|\d{3,4}cc|\(\d+ ?PS\)|TDCi|\bTDI\b|diesel|Indonesia|Jakarta|Japan|Thailand|Malaysia|"
                     r"Philippines|India|China|Chinese|Sanming|Australia|\bUK\b|Taiwan|Korea|Brazil|Mexico|Russia|Europe|"
                     r"Germany|France|Italy|Spain|Netherlands|Poland|Norway|Sweden|Automatic \d|Manual \d|SIAM|Bangkok|"
-                    r"Kuala|Manila|Tokyo|Beijing|Shanghai|Seoul|RHD", re.I)
+                    r"Kuala|Manila|Tokyo|Beijing|Shanghai|Seoul|RHD|Argentina|Chile|Colombia|Peru|South Africa", re.I)
 
-def commons_search(q):
-    p = {"action": "query", "format": "json", "generator": "search", "gsrnamespace": 6, "gsrlimit": 30,
-         "gsrsearch": q + " filetype:bitmap", "prop": "imageinfo", "iiprop": "url|extmetadata|size",
-         "iiurlwidth": 800, "iiextmetadatafilter": "Artist|LicenseShortName"}
-    req = urllib.request.Request("https://commons.wikimedia.org/w/api.php?" + urllib.parse.urlencode(p),
-                                 headers={"User-Agent": WIKI_UA})
+def wm_api(host, params):
+    req = urllib.request.Request(f"https://{host}/w/api.php?" + urllib.parse.urlencode({"format": "json", **params}),
+                                 headers=WIKI_HEADERS)
     for i in range(6):
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
-                return list(json.load(r).get("query", {}).get("pages", {}).values())
+                return json.load(r)
         except urllib.error.HTTPError as e:
             if e.code != 429:
                 raise
             time.sleep(int(e.headers.get("Retry-After") or 0) or 5 * (i + 1))
-    return []
+    return {}
+
+def commons_search(q):
+    d = wm_api("commons.wikimedia.org", {
+        "action": "query", "generator": "search", "gsrnamespace": 6, "gsrlimit": 30,
+        "gsrsearch": q + " filetype:bitmap", "prop": "imageinfo|categories", "clshow": "!hidden", "cllimit": "max",
+        "iiprop": "url|extmetadata|size", "iiurlwidth": 800,
+        "iiextmetadatafilter": "Artist|LicenseShortName|ImageDescription"})
+    return list(d.get("query", {}).get("pages", {}).values())
+
+def strip_html(x):
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", x or "")).strip()
+
+def photo_entry(ii, y, t, kind):
+    m = ii.get("extmetadata", {})
+    return {"img": ii["thumburl"], "page": ii["descriptionurl"], "y": y, "by": strip_html(m.get("Artist", {}).get("value"))[:60],
+            "lic": m.get("LicenseShortName", {}).get("value", ""), "t": t[:120], "k": kind, "v": PHOTO_VERSION}
 
 def word_rx(s):
     parts = [re.escape(x) for x in re.split(r"[^A-Za-z0-9]+", s) if x]
@@ -355,41 +376,74 @@ def title_ok(t, make, model, allow_overseas):
     return True
 
 def find_photo(year, make, model):
-    """Commons photo whose file name says this model year right before the make or model.
-    Titles like 'Honda Accord 2022-01-16' carry the photo date, not the model year, so they never match.
-    Order of preference: US market shot of the exact year, then up to 2 years away, then overseas versions."""
+    """Exterior photo of this make, model and year. Order of preference:
+    1. Commons file named with this model year right before the make or model, US version, front view first,
+       then up to 2 years away, then overseas versions. Photo dates in titles never count as model years.
+       Interior, rear and detail shots are rejected using the title, the file's categories and its description.
+    2. The lead photo of the model's Wikipedia article (labeled: generation may differ)."""
     mk = make.replace("-Benz", "")
     md_rx = word_rx(model)
-    if not md_rx:
-        return None
-    lead = r"(?:%s|%s)" % (r"[\s\-_]?".join(map(re.escape, re.split(r"[^A-Za-z0-9]+", mk))),
-                           r"[\s\-_]?".join(map(re.escape, re.split(r"[^A-Za-z0-9]+", model))))
-    results = {}
-    for allow in (False, True):
-        for y in (year, year - 1, year + 1, year - 2, year + 2):
-            if y not in results:
-                results[y] = commons_search(f'"{y}" {make} {model}')
-                time.sleep(1)
-            yr = re.compile(rf"(?<![\d\-.])(?:(?:19|20)\d\d\s*[\-–]\s*{y}|{y}(?:\s*[\-–]\s*(?:19|20)?\d\d)?)"
-                            rf"(?![\d.])[\s_,]+(?:[A-Za-z\-]+[\s_]+)?{lead}", re.I)
-            best = None
-            for p in results[y]:
-                t = p["title"][5:].rsplit(".", 1)[0]
-                if not yr.search(t) or not md_rx.search(t) or not title_ok(t, make, model, allow):
-                    continue
-                ii = p["imageinfo"][0]
-                if ii.get("width", 0) < ii.get("height", 1) * 1.15 or ii.get("width", 0) < 640:
-                    continue
-                sc = (3 * bool(re.search(r"front|\bfr\b|3/4|three.quarter", t, re.I)) + 2 * bool(re.match(rf"\W*{y}", t))
-                      + 2 * bool(US_CUES.search(t)) - len(t) / 60)
-                if best is None or sc > best[0]:
-                    m = ii.get("extmetadata", {})
-                    by = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.get("Artist", {}).get("value", ""))).strip()
-                    best = (sc, {"img": ii["thumburl"], "page": ii["descriptionurl"], "y": y, "by": by[:60],
-                                 "lic": m.get("LicenseShortName", {}).get("value", ""), "t": t[:120]})
-            if best:
-                return best[1]
+    if md_rx:
+        lead = r"(?:%s|%s)" % (r"[\s\-_]?".join(map(re.escape, re.split(r"[^A-Za-z0-9]+", mk))),
+                               r"[\s\-_]?".join(map(re.escape, re.split(r"[^A-Za-z0-9]+", model))))
+        results = {}
+        for allow in (False, True):
+            for y in (year, year - 1, year + 1, year - 2, year + 2):
+                if y not in results:
+                    results[y] = commons_search(f'"{y}" {make} {model}')
+                    time.sleep(1)
+                yr = re.compile(rf"(?<![\d\-.])(?:(?:19|20)\d\d\s*[\-–]\s*{y}|{y}(?:\s*[\-–]\s*(?:19|20)?\d\d)?)"
+                                rf"(?![\d.])[\s_,]+(?:[A-Za-z\-]+[\s_]+)?{lead}", re.I)
+                best = None
+                for p in results[y]:
+                    t = p["title"][5:].rsplit(".", 1)[0]
+                    if not yr.search(t) or not md_rx.search(t) or not title_ok(t, make, model, allow):
+                        continue
+                    ii = p["imageinfo"][0]
+                    if ii.get("width", 0) < ii.get("height", 1) * 1.15 or ii.get("width", 0) < 640:
+                        continue
+                    cats = " ".join(c["title"] for c in p.get("categories", []))
+                    desc = strip_html(ii.get("extmetadata", {}).get("ImageDescription", {}).get("value"))[:400]
+                    if VIEW_BAD.search(cats) or VIEW_BAD.search(desc):
+                        continue
+                    lic = ii.get("extmetadata", {}).get("LicenseShortName", {}).get("value", "")
+                    if re.search(r"fair use|non.free", lic, re.I):
+                        continue
+                    sc = (5 * bool(FRONT.search(t) or FRONT.search(desc)) + 2 * bool(re.match(rf"\W*{y}", t))
+                          + 2 * bool(US_CUES.search(t)) - len(t) / 60)
+                    if best is None or sc > best[0]:
+                        best = (sc, photo_entry(ii, y, t, "near" if y != year else "exact"))
+                if best:
+                    return best[1]
+    return wiki_lead_photo(make, model)
+
+def wiki_lead_photo(make, model):
+    mk = make if make.upper() in ("BMW", "GMC") else make.title()
+    for title in (f"{mk} {model}", f"{mk} {model.split()[0]}" if " " in model else None):
+        if not title:
+            continue
+        d = wm_api("en.wikipedia.org", {"action": "query", "titles": title, "redirects": 1,
+                                        "prop": "pageimages", "piprop": "name", "pilicense": "free"})
+        time.sleep(1)
+        pages = list(d.get("query", {}).get("pages", {}).values())
+        name = pages[0].get("pageimage") if pages and "missing" not in pages[0] else None
+        if not name or PHOTO_BAD.search(name):
+            continue
+        info = wm_api("commons.wikimedia.org", {"action": "query", "titles": "File:" + name, "prop": "imageinfo",
+                                                "iiprop": "url|extmetadata|size", "iiurlwidth": 800,
+                                                "iiextmetadatafilter": "Artist|LicenseShortName"})
+        time.sleep(1)
+        ip = list(info.get("query", {}).get("pages", {}).values())
+        if not ip or "imageinfo" not in ip[0]:
+            continue
+        ii = ip[0]["imageinfo"][0]
+        if ii.get("width", 0) < ii.get("height", 1):
+            continue
+        return photo_entry(ii, None, name.rsplit(".", 1)[0].replace("_", " "), "model")
     return None
+
+def photo_still_good(hit, mk, md):
+    return (hit.get("v") == PHOTO_VERSION and "img" in hit)
 
 def photos_for(combos, cache):
     today = dt.date.today()
@@ -398,10 +452,10 @@ def photos_for(combos, cache):
     for y, mk, md in combos:
         k = f"{y}|{mk}|{md}"
         hit = cache.get(k)
-        if hit and "img" in hit and title_ok(hit.get("t", ""), mk, md, True) \
-                and not (NON_US.search(hit.get("t", "")) and not hit.get("ov")):
-            continue          # still good under the current rules
-        if hit and "none" in hit and (today - dt.date.fromisoformat(hit["none"])).days < PHOTO_RETRY_DAYS:
+        if hit and photo_still_good(hit, mk, md):
+            continue
+        if hit and hit.get("v") == PHOTO_VERSION and "none" in hit \
+                and (today - dt.date.fromisoformat(hit["none"])).days < PHOTO_RETRY_DAYS:
             continue
         if done >= budget:
             break
@@ -411,12 +465,11 @@ def photos_for(combos, cache):
         except Exception as e:
             print("  photo lookup failed", k, e)
             continue
-        if ph and NON_US.search(ph["t"]):
-            ph["ov"] = 1      # overseas version was the only match, keep it and stop asking
-        cache[k] = ph if ph else {"none": today.isoformat()}
+        cache[k] = ph if ph else {"none": today.isoformat(), "v": PHOTO_VERSION}
     if done:
-        found = sum(1 for y, mk, md in combos if "img" in cache.get(f"{y}|{mk}|{md}", {}))
-        print(f"photo lookups this run: {done}, models with a photo: {found}/{len(combos)}")
+        found = sum(1 for y, mk, md in combos if cache.get(f"{y}|{mk}|{md}", {}).get("v") == PHOTO_VERSION
+                    and "img" in cache[f"{y}|{mk}|{md}"])
+        print(f"photo lookups this run: {done}, models with a checked photo: {found}/{len(combos)}")
 
 # ---------- formatting ----------
 
@@ -505,7 +558,7 @@ def build_car(r, vc, mc, pc, nc):
             car["stars"] = int(st["stars"]); car["starsFor"] = st["desc"]
         ph = pc.get(f'{year}|{car["make"]}|{car["model"]}')
         if ph and "img" in ph:
-            car["photo"] = ph
+            car["photo"] = {k: ph[k] for k in ("img", "page", "y", "by", "lic", "k") if k in ph}
     car = {k: v for k, v in car.items() if v not in ("", None, [])}
     car.setdefault("lien", ""); car.setdefault("flags", [])
     return car
@@ -515,7 +568,13 @@ def main():
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--pdf"); ap.add_argument("--id")
     ap.add_argument("--no-photos", action="store_true")
+    ap.add_argument("--photo-test", help='comma list like "2011|Volvo|XC90,2025|Nissan|Rogue"')
     a = ap.parse_args()
+    if a.photo_test:
+        for item in a.photo_test.split(","):
+            y, mk, md = item.strip().split("|")
+            print(item, "->", json.dumps(find_photo(int(y), mk, md)))
+        return
 
     raw = load(RAW, {})
     vc, mc = load(VIN_CACHE, {}), load(MODEL_CACHE, {})

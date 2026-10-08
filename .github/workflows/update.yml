@@ -13,6 +13,9 @@ on:
       photo_budget:
         description: "Max new photo lookups this run"
         default: "450"
+      photo_test:
+        description: "Only test photo picks, e.g. 2011|Volvo|XC90,2025|Nissan|Rogue (nothing is saved)"
+        default: ""
 
 permissions:
   contents: write
@@ -24,18 +27,23 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install pdfplumber==0.11.4
+      - name: Test photo picks
+        if: ${{ inputs.photo_test != '' && inputs.photo_test != null }}
+        run: python scripts/update.py --photo-test "${{ inputs.photo_test }}"
       - name: Pull lists and decode VINs
+        if: ${{ !inputs.photo_test }}
         env:
           PHOTO_BUDGET: ${{ inputs.photo_budget || '450' }}
         run: python scripts/update.py ${{ inputs.force && '--force' || '' }}
       - name: Commit changes
+        if: ${{ !inputs.photo_test }}
         run: |
           git config user.name "auction-bot"
           git config user.email "auction-bot@users.noreply.github.com"
