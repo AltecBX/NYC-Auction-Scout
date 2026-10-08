@@ -211,7 +211,7 @@ def parse_autousa_detail(page, vin):
         part, _, what = text(alt).partition("|")
         what = re.sub(r"\s*∙\s*", ", ", what.strip())
         what = re.sub(r"\bprev\b", "previous", re.sub(r"\bsubstd\b", "substandard", what.lower()))
-        note = f"{part.strip().capitalize()}: {what}" if part.strip() else what
+        note = f"{part.strip()}: {what}" if part.strip() else what           # RF Fender: replaced, acceptable
         if what and note not in notes:
             notes.append(note)
     return {"notes": notes, "photos": "/image/" in page}
@@ -391,11 +391,11 @@ def group(recs):
 def card(vin, cache, valid):
     """History payload for one car in auctions.json."""
     if not valid:
-        return {"st": "unchecked", "novin": True, "why": "No valid VIN on the city list, so no exact VIN search is possible."}
+        return {"st": "unchecked", "novin": True}
     entry = cache.get(vin) or {}
     srcs = entry.get("src", {})
     if not srcs:
-        return {"st": "unchecked", "why": "Not checked yet. Upcoming sales are checked soonest first."}
+        return {"st": "unchecked"}
     recs = entry.get("recs", [])
     sts = [s["st"] for s in srcs.values()]
     st = ("found" if recs else "unavailable" if all(x == "error" for x in sts)

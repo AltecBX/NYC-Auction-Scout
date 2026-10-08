@@ -145,7 +145,7 @@ class Research(unittest.TestCase):
         c = H.card(VIN, cache, True)
         self.assertEqual(c["st"], "found")
         self.assertTrue(any("salvage certificate of title" in f["t"] for f in c["flags"]))
-        self.assertTrue(any("Front bumper: previous repair, substandard panel gaps/misaligned" in f["t"] for f in c["flags"]))
+        self.assertTrue(any("Front Bumper: previous repair, substandard panel gaps/misaligned" in f["t"] for f in c["flags"]))
         auto = [e for e in c["ev"] if e["src"] == "autousa"]
         self.assertEqual(len(auto), 1)                     # two weekly runs, same reading, one event
         self.assertEqual(auto[0]["dates"], ["2025-02-11", "2025-02-25"])

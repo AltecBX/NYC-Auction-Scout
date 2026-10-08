@@ -178,10 +178,10 @@ function histHTML(c) {
     none: "No matching records in the sources checked. That is not a clean history: most cars never pass through these sites, and sellers can pay some sites to remove listings.",
     partial: "No matching records in the sources that answered. Not a clean history, and some sources could not be checked.",
     unavailable: "The history sources could not be reached on the last try. Nothing is known yet.",
-    unchecked: h.why || "Not checked yet.",
+    unchecked: h.novin ? "No valid VIN on the city list, so no exact VIN search is possible." : "Not checked yet. Upcoming sales are checked soonest first.",
   }[h.st] || "Not checked yet.";
   const manual = c.vin && c.vin.length === 17 && !h.novin ? `<div class="hman"><div class="k">Search yourself, free</div><div class="links">
-      <a href="https://www.google.com/search?q=site%3Abid.cars+${esc(c.vin)}" target="_blank" rel="noopener">Bid.Cars</a>
+      <a href="https://www.google.com/search?q=site%3Abid.cars+${esc(c.vin)}" target="_blank" rel="noopener">Bid.Cars via Google</a>
       <a href="https://www.google.com/search?q=%22${esc(c.vin)}%22" target="_blank" rel="noopener">Google</a>
       <a href="https://www.nicb.org/vincheck" target="_blank" rel="noopener">NICB</a></div></div>` : "";
   return `<details class="hist"><summary><span>Vehicle history</span>${histChip(h)}</summary><div class="hin">

@@ -201,6 +201,7 @@ button,select,input{font:inherit;color:inherit}
 .hsrc b{color:var(--ink);font-weight:600}
 .hman .k{font-size:.84rem;color:var(--ink-2);margin-bottom:6px}
 .hman .links{margin:0}
+.hman .links a{text-align:center;padding:4px 6px;line-height:1.15}
 
 .more{border-top:1px solid var(--rule);padding-top:4px}
 .more summary{cursor:pointer;min-height:40px;display:flex;align-items:center;font-weight:600;color:var(--enamel);list-style:none}
