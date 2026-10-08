@@ -548,6 +548,7 @@ def photo_still_good(hit, mk, md):
 def photos_for(combos, cache):
     today = dt.date.today()
     budget = int(os.environ.get("PHOTO_BUDGET") or PHOTO_BUDGET)
+    stop_at = time.time() + 60 * float(os.environ.get("PHOTO_MINUTES") or 80)   # leave time to save the run
     done = 0
     for y, mk, md, body in combos:
         k = f"{y}|{mk}|{md}"
@@ -557,7 +558,7 @@ def photos_for(combos, cache):
         if hit and hit.get("v") == PHOTO_VERSION and "none" in hit \
                 and (today - dt.date.fromisoformat(hit["none"])).days < PHOTO_RETRY_DAYS:
             continue
-        if done >= budget:
+        if done >= budget or time.time() > stop_at:
             break
         done += 1
         try:
