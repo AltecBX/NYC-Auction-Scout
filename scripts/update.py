@@ -152,15 +152,17 @@ def nice(s):
     s = " ".join(w if re.fullmatch(r"(N\.?Y\.?|NY)", w, re.I) else w.capitalize() for w in s.split())
     return re.sub(r"'S\b", "'s", s.replace("N.y.", "N.Y."))
 
-SALE_AT = re.compile(r"(?:o.?clock\s+in\s+the\s+(?:morning|afternoon)|\d{1,2}:\d{2}\s*[AP]\.?\s?M\.?|noon)\s*,?\s+at\s+"
+SALE_AT = re.compile(r"(?:o.?clock\s+in\s+the\s+(?:morning|afternoon)|\d{1,2}:\d{2}\s*[AP]\.?\s?M\.?|noon)"
+                     r"(?:\s*\([^)]{0,40}\))?\s*,?\s+at\s+"
                      r"(.{6,140}?\b(?:N\.?\s?Y\.?|NEW YORK)\.?,?\s*\d{5})\b", re.I)
-CITY = r"(BRONX|BROOKLYN|QUEENS|STATEN ISLAND|NEW YORK|FAR ROCKAWAY|JAMAICA|LONG ISLAND CITY|ASTORIA|MASPETH|COLLEGE POINT)"
+CITY = r"(BRONX|BROOKLYN|QUEENS|STATEN ISLAND|NEW YORK|FAR ROCKAWAY|ARVERNE|FLUSHING|JAMAICA|LONG ISLAND CITY|ASTORIA|MASPETH|COLLEGE POINT|WOODSIDE|CORONA)"
 
 def tidy_place(p):
     p = re.sub(r"\s+", " ", p).strip(" ,.")
-    p = re.sub(r"\s+(\d[\d\-]*\s+[A-Za-z])", r", \1", p, count=1)              # venue, street number
+    p = re.sub(r"\s+(\d[\d\-]*\s+[A-Za-z0-9])", r", \1", p, count=1)              # venue, street number
     p = re.sub(rf",?\s+{CITY},?\s+(N\.?\s?Y\.?|NEW YORK)\.?,?\s*(\d{{5}})$", r", \1, NY \3", p, flags=re.I)
     p = re.sub(r"\s*,\s*,", ",", p)
+    p = re.sub(r"\bN\.?\s?Y\.?(?=,? \d{5})|\bNew York(?=,? \d{5}$)", "NY", p, flags=re.I)
     return nice(p).replace(", Ny ", ", NY ")
 
 def find_location(flat):
