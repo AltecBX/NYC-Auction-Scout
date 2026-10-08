@@ -4,6 +4,7 @@ Run: python scripts/update.py            (normal daily run)
      python scripts/update.py --force    (re-parse every PDF even if unchanged)
      python scripts/update.py --pdf FILE --id auction-100826-bronx   (parse a local PDF, for testing)
      python scripts/update.py --names-check   (print every saved lot whose NHTSA names differ from its decode)
+     HISTORY_MINUTES=20 caps the VIN history checks per run (scripts/history.py), --no-history skips them.
 """
 import argparse, datetime as dt, hashlib, io, json, os, re, sys, time
 import urllib.error, urllib.parse, urllib.request
@@ -13,6 +14,7 @@ import pdfplumber
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import view_check  # noqa: E402
+import history  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
@@ -22,6 +24,7 @@ MODEL_CACHE = DATA / "model_cache.json"
 PHOTO_CACHE = DATA / "photo_cache.json"
 NCAP_CACHE = DATA / "ncap_cache.json"
 NAMES_CACHE = DATA / "nhtsa_models.json"
+HIST_CACHE = DATA / "history_cache.json"
 RAW = DATA / "raw.json"
 
 PAGE = "https://www.nyc.gov/site/finance/vehicles/auctions.page"
@@ -453,7 +456,7 @@ def model_stats(d, names, cache):
             q = urllib.parse.urlencode({"make": make, "model": nm, "modelYear": year})
             for r in http(f"https://api.nhtsa.gov/recalls/recallsByVehicle?{q}").get("results", []):
                 rec[r.get("NHTSACampaignNumber")] = r
-        for nm in dict.fromkeys([model] + names):
+        for nm in names or [model]:                  # complaints use NHTSA's names: a Civic Hybrid is not a Civic
             q = urllib.parse.urlencode({"make": make, "model": nm, "modelYear": year})
             for c in http(f"https://api.nhtsa.gov/complaints/complaintsByVehicle?{q}").get("results", []):
                 comp[c.get("odiNumber")] = c
@@ -881,10 +884,10 @@ def plant(d):
 def make_name(mk):
     return mk if mk in ("BMW", "GMC", "KIA", "RAM", "MINI") else mk.title()
 
-def build_car(r, vc, mc, pc, nc, matched):
+def build_car(r, vc, mc, pc, nc, matched, hc):
     v = r["vin"]
     car = {"n": r["n"], "listYear": r["year"], "listMake": r["make"], "plate": f'{r["plate"]} {r["st"]}'.strip(),
-           "vin": v, "lien": tidy(r["lien"]), "flags": []}
+           "vin": v, "lien": tidy(r["lien"]), "flags": [], "history": history.card(v, hc, vin_ok(v))}
     if not vin_ok(v):
         car["flags"].append("VIN not listed by the city, no decode possible" if v == "VIN BLOCKED"
                             else "VIN fails its check digit, likely a typo on the city list")
@@ -924,6 +927,7 @@ def main():
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--pdf"); ap.add_argument("--id")
     ap.add_argument("--no-photos", action="store_true")
+    ap.add_argument("--no-history", action="store_true")
     ap.add_argument("--photo-test", help='comma list like "2011|Volvo|XC90,2025|Nissan|Rogue"')
     ap.add_argument("--names-check", action="store_true")
     a = ap.parse_args()
@@ -949,6 +953,7 @@ def main():
     raw = load(RAW, {})
     vc, mc = load(VIN_CACHE, {}), load(MODEL_CACHE, {})
     pc, nc, nn = load(PHOTO_CACHE, {}), load(NCAP_CACHE, {}), load(NAMES_CACHE, {})
+    hc = load(HIST_CACHE, {})
     today = dt.date.today()
     cutoff = (today - dt.timedelta(days=KEEP_PAST_DAYS)).isoformat()
 
@@ -996,13 +1001,23 @@ def main():
         model_stats(d, names, mc)
         ncap(d, names, b, dr, nc)
     print(f"{len(stats)} model groups, {sum(1 for x in stats.values() if not x[1])} with no NHTSA model name")
+    if not a.no_history:
+        # past listings of each exact VIN, soonest upcoming sale first, Bronx first on a shared day
+        up = sorted((x for x in raw.values() if x["date"] >= today.isoformat()),
+                    key=lambda x: (x["date"], x["borough"] != "Bronx"))
+        cars = [(r["vin"], vc.get(r["vin"], {}).get("Make", ""), vc.get(r["vin"], {}).get("Model", ""))
+                for x in up for r in x["rows"] if vin_ok(r["vin"])]
+        try:
+            history.research(list(dict.fromkeys(cars)), hc, minutes=float(os.environ.get("HISTORY_MINUTES") or 20))
+        except Exception as e:                        # history must never cost an auction update
+            print("history research stopped:", e)
     if not a.no_photos:
         photos_for(list(dict.fromkeys(combos)), pc)
 
     auctions = []
     for x in sorted(raw.values(), key=lambda x: (x["date"], x["borough"])):
         meta = {k: v for k, v in x.items() if k not in ("rows", "hash")}
-        auctions.append({**meta, "cars": [build_car(r, vc, mc, pc, nc, matched) for r in x["rows"]]})
+        auctions.append({**meta, "cars": [build_car(r, vc, mc, pc, nc, matched, hc) for r in x["rows"]]})
     seen = {}
     for x in auctions:
         for c in x["cars"]:
@@ -1019,6 +1034,7 @@ def main():
     def dump(p, obj): p.write_text(json.dumps(obj, separators=(",", ":"), sort_keys=p != OUT))
     dump(OUT, {"updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"), "auctions": auctions})
     dump(RAW, raw); dump(VIN_CACHE, vc); dump(MODEL_CACHE, mc); dump(PHOTO_CACHE, pc); dump(NCAP_CACHE, nc); dump(NAMES_CACHE, nn)
+    dump(HIST_CACHE, hc)
     print(f"wrote {len(auctions)} auctions, {sum(len(x['cars']) for x in auctions)} lots")
 
 if __name__ == "__main__":
