@@ -3,6 +3,8 @@
 Run: python scripts/update.py            (normal daily run)
      python scripts/update.py --force    (re-parse every PDF even if unchanged)
      python scripts/update.py --pdf FILE --id auction-100826-bronx   (parse a local PDF, for testing)
+     python scripts/update.py --names-check   (print every saved lot whose NHTSA names differ from its decode)
+     HISTORY_MINUTES=20 caps the VIN history checks per run (scripts/history.py), --no-history skips them.
 """
 import argparse, datetime as dt, hashlib, io, json, os, re, sys, time
 import urllib.error, urllib.parse, urllib.request
@@ -12,6 +14,7 @@ import pdfplumber
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import view_check  # noqa: E402
+import history  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
@@ -20,6 +23,8 @@ VIN_CACHE = DATA / "vin_cache.json"
 MODEL_CACHE = DATA / "model_cache.json"
 PHOTO_CACHE = DATA / "photo_cache.json"
 NCAP_CACHE = DATA / "ncap_cache.json"
+NAMES_CACHE = DATA / "nhtsa_models.json"
+HIST_CACHE = DATA / "history_cache.json"
 RAW = DATA / "raw.json"
 
 PAGE = "https://www.nyc.gov/site/finance/vehicles/auctions.page"
@@ -30,7 +35,7 @@ KEEP_PAST_DAYS = 14
 MODEL_TTL_DAYS = 30
 PHOTO_RETRY_DAYS = 21          # look again for models that had no photo
 PHOTO_BUDGET = 450             # max new photo lookups per run, keeps runs short
-VIN_CACHE_VERSION = 2
+VIN_CACHE_VERSION = 3
 WIKI_UA = "NYCAuctionScout/1.0 (https://github.com/AltecBX/NYC-Auction-Scout)"
 
 BOROUGHS = {"bronx": "Bronx", "brooklyn": "Brooklyn", "queens": "Queens",
@@ -226,7 +231,8 @@ VPIC_KEEP = ["Make", "Model", "ModelYear", "Trim", "Series", "BodyClass", "Displ
              "EngineHP", "Turbo", "FuelTypePrimary", "ElectrificationLevel", "DriveType", "TransmissionStyle",
              "TransmissionSpeeds", "Doors", "Seats", "PlantCity", "PlantState", "PlantCountry",
              "RearVisibilitySystem", "BlindSpotMon", "AdaptiveCruiseControl", "ForwardCollisionWarning", "CIB",
-             "LaneDepartureWarning", "LaneKeepSystem", "RearCrossTrafficAlert", "KeylessIgnition", "ParkAssist"]
+             "LaneDepartureWarning", "LaneKeepSystem", "RearCrossTrafficAlert", "KeylessIgnition", "ParkAssist",
+             "BodyCabType"]
 FEATURES = [("RearVisibilitySystem", "Backup camera"), ("BlindSpotMon", "Blind spot"),
             ("AdaptiveCruiseControl", "Adaptive cruise"), ("CIB", "Auto braking"),
             ("ForwardCollisionWarning", "Collision warning"), ("LaneKeepSystem", "Lane keep"),
@@ -245,19 +251,219 @@ def decode_vins(vins, cache):
     if need:
         print(f"decoded {len(need)} VINs")
 
-def model_stats(make, model, year, cache):
-    k = f"{make}|{model}|{year}"
+# ---------- NHTSA model names ----------
+# Complaints and crash ratings are filed under NHTSA's own model names, which often differ from the VIN decode:
+# F-150 is "F-150 SUPER CREW", a Lexus RX with trim 350 is "RX350", a BMW 330i is "3 SERIES", a ProMaster 2500 is
+# "PROMASTER", a Tesla Model Y is "MODEL Y (All Variants)". Asking with the decoded name returns 0, so each decode
+# is matched to NHTSA's list for that make and year first. Unmatched means NHTSA has no data, not zero complaints.
+
+ELEC_WORDS = [("PHEV", {"PHEV", "ENERGI", "4XE", "PLUGIN", "PRIME", "RECHARGE", "T8"}),
+              ("BEV", {"BEV", "EV", "ELECTRIC", "LIGHTNING", "ETRON"}),
+              ("HEV", {"HYBRID", "HEV"}), ("ICE", {"ICE"})]
+BODY_GROUPS = {"Sedan": {"SEDAN"}, "Coupe": {"COUPE"}, "Hatchback": {"HATCHBACK"}, "Wagon": {"WAGON"},
+               "Convertible": {"CONVERTIBLE", "CABRIOLET", "ROADSTER"}, "Pickup": {"PICKUP"}}
+BODY_WORDS = set().union(*BODY_GROUPS.values()) | {"CARGO", "VAN", "PASSENGER"}
+SPECIAL = {"POLICE", "INTERCEPT", "INTERCEPTOR", "PURSUIT", "SI", "TYPE", "SRT", "SRT8", "HELLCAT", "AMG", "NISMO",
+           "STI", "RAPTOR", "TRX", "ZL1", "Z06", "ZR1", "GT350", "GT500", "SHELBY", "CHASSIS", "STRIPPED", "MOTORHOME"}
+CAB = {"Crew/Super Crew/Crew Max": {"CREW", "SUPERCREW", "CREWMAX"},
+       "Extra/Super/Quad/Double/King/Extended": {"EXTENDED", "SUPERCAB", "QUAD", "DOUBLE", "KING", "ACCESS", "EXTRA"},
+       "Regular": {"REGULAR"}}
+NAME_ALIAS = {"Expedition MAX": "Expedition EL", "M-Class": "ML-Class"}
+
+def nm_tokens(s, brackets=False):
+    """Name as comparable tokens: F-150 -> F150. (All Variants) and Later Release are dropped unless brackets
+    is set, which keeps bracketed words like (SUPER CREW) for telling variants apart."""
+    s = (s or "").upper().replace("&", " AND ")
+    s = re.sub(r"[()]", " ", s) if brackets else re.sub(r"\([^)]*\)", " ", s)
+    s = re.sub(r"^\s*REDUNDANT\s+", "", s)
+    toks = [re.sub(r"[^A-Z0-9]", "", t) for t in s.split()]
+    return [t for t in toks if t and t not in ("LATER", "EARLY", "RELEASE")]
+
+def compact(s):
+    return "".join(nm_tokens(s))
+
+def name_alts(name):
+    """GS350/460 -> GS350, GS460. M35/45 -> M35, M45."""
+    parts = [p for p in re.split(r"\s*/\s*", re.sub(r"\([^)]*\)", " ", name)) if p.strip()]
+    if len(parts) < 2:
+        return set()
+    lead = re.match(r"[A-Za-z]*", parts[0].strip()).group(0)
+    return {compact(p if not p.strip()[0].isdigit() else lead + p) for p in parts}
+
+def kind_of(words):
+    for k, ws in ELEC_WORDS:
+        if set(words) & ws:
+            return k
+    return ""
+
+def car_kind(d):
+    el = d.get("ElectrificationLevel", "")
+    return ("PHEV" if "PHEV" in el else "BEV" if "BEV" in el
+            else "HEV" if "HEV" in el and "Mild" not in el else "ICE")
+
+def name_probes(d):
+    """Names to look for, best first. Names in one step are merged: the decoded model, then each part of
+    Caravan/Grand Caravan or Ninety Eight (98), then the model with a short trim (A8 L), a Mercedes style trim
+    code (C300), then the series (3-Series, Econoline, Silverado 2500)."""
+    model, trim, series = d.get("Model", ""), d.get("Trim", ""), d.get("Series", "")
+    steps = [[model] if not re.search(r"[/,]", model) else [],
+             re.split(r"\s*[/,]\s*", re.sub(r"\(.*?\)", "", model)) + re.findall(r"\((.*?)\)", model),
+             [NAME_ALIAS.get(model, "")]]
+    t0 = trim.split()[0] if trim.split() else ""
+    if " " not in model and re.fullmatch(r"[A-Za-z0-9]{1,4}", t0):
+        steps.append([f"{model} {t0}"])
+    code = re.match(r"(?:AMG\s+)?([A-Z]{1,3}\d{2,3})", trim)
+    steps.append([code.group(1) if code else ""])
+    steps.append([series if re.fullmatch(r"\d[ -]?Series|[A-Za-z]{5,}", series, re.I) else ""])
+    num = re.match(r"(\d{3,4})\b", series)
+    steps.append([f"{model.split()[0]} {num.group(1)}" if num and model else ""])
+    steps.append([series_alias(d.get("Make", ""), model) or ""])
+    out, seen = [], set()
+    for st in steps:
+        st = [x.strip() for x in st if x.strip() and x.strip() not in seen]
+        seen |= set(st)
+        if st:
+            out.append(st)
+    return out
+
+def wanted(d):
+    """Words that point to the right variant, with weights: series and cab type count most."""
+    w = {}
+    def add(words, wt):
+        for t in words:
+            w[t] = max(w.get(t, 0), wt)
+    add(nm_tokens(d.get("Series", ""), True), 2)
+    add(CAB.get(d.get("BodyCabType", ""), ()), 2)
+    add(nm_tokens(d.get("Trim", ""), True), 1)
+    bc = d.get("BodyClass", "")
+    add({"CARGO"} if bc == "Cargo Van" else {"PASSENGER", "PASS"} if body_short(bc) == "Van" else (), 1)
+    add(BODY_GROUPS.get(body_short(bc), ()), 1)
+    if d.get("EngineCylinders"):
+        add({"V" + d["EngineCylinders"]}, 1)
+    try:
+        add({str(round(float(d.get("DisplacementL") or 0) * 100))}, 1)        # Lexus RX350 is 3.5L
+    except ValueError:
+        pass
+    if "Diesel" in d.get("FuelTypePrimary", ""):
+        add({"DIESEL"}, 1)
+    add({DRIVE.get(d.get("DriveType", ""), "")} - {""}, 1)
+    if bc == "Cargo Van":
+        add({"VAN"}, 1)
+    return w
+
+def name_candidates(pt, table, vpic):
+    """(name, extra words or None when exact, all words) for every NHTSA name that fits one probe."""
+    pc = "".join(pt)
+    if not pt:
+        return []
+    sibs = [c for c in vpic if c.startswith(pc) and c != pc]      # Rogue Sport, NV200, Corolla Cross
+    out = []
+    for n, ct, cc, alts, full in table:
+        if not ct:
+            continue
+        if cc == pc or pc in alts:
+            out.append((n, None, full))
+            continue
+        extra = None
+        for k in range(1, len(ct)):                                 # F-150 SUPER CREW
+            if "".join(ct[:k]) == pc:
+                extra = ct[k:]
+        if extra is None and pc.isalpha() and len(pc) >= 2 and cc.startswith(pc) and cc[len(pc)].isdigit():
+            extra = [ct[0][len(pc):]] + ct[1:]                       # RX -> RX350, NV -> NV3500
+        if extra is None and len(pt) > 1 and ct[0] == pt[0] and set(pt) <= set(ct):
+            extra = [t for t in ct if t not in pt]                  # Silverado HD -> SILVERADO 2500 HD
+        if extra is None and len(cc) >= 2 and pc.startswith(cc) and (
+                pc[len(cc):].isdigit() or (pt[:len(ct)] == ct and set(pt[len(ct):]) <= BODY_WORDS)):
+            extra = []                          # JX35 -> JX, ProMaster 2500 -> PROMASTER, Cooper Convertible -> COOPER
+        if extra is None and len(cc) >= 4 and re.search(r"[A-Z]", cc) and (
+                any(ct[i:i + len(pt)] == pt for i in range(1, len(ct) - len(pt) + 1))   # COOPER S COUNTRYMAN
+                or (len(ct) < len(pt) and pt[-len(ct):] == ct)):                         # Corolla Matrix -> MATRIX
+            if cc not in vpic or vpic[cc] <= set(pt):               # but Cherokee is not GRAND CHEROKEE
+                extra = [t for t in ct if t not in pt]
+        if extra is None or any(cc.startswith(s) for s in sibs):
+            continue
+        out.append((n, extra, full))
+    return out
+
+def match_names(d, names):
+    """NHTSA model names that cover this decoded vehicle, [] when NHTSA has none for it."""
+    make = d.get("Make", "")
+    vpic = {compact(m): set(nm_tokens(m)) for m in make_models(make)} if make else {}
+    kind, want = car_kind(d), wanted(d)
+    body = body_short(d.get("BodyClass", ""))
+    other_bodies = set().union(*(v for k, v in BODY_GROUPS.items() if k != body))
+    diesel = "Diesel" in d.get("FuelTypePrimary", "")
+    table = [(n, nm_tokens(n), compact(n), name_alts(n), set(nm_tokens(n, True))) for n in names]
+    for step in name_probes(d):
+        cands = [c for probe in step for c in name_candidates(nm_tokens(probe), table, vpic)]
+        if not cands:
+            continue
+        pt = {t for probe in step for t in nm_tokens(probe)}
+        same = [c for c in cands if kind_of(c[2]) == kind]
+        generic = [c for c in cands if not kind_of(c[2])]
+        cands = (same + (generic if kind == "ICE" else [])) or generic     # a hybrid never gets ICE only names
+        if not cands:
+            return []
+        cands = [c for c in cands if not (c[2] & other_bodies)] or cands       # Evoque (CONVERTIBLE), H2 pickup
+        if not diesel:
+            cands = [c for c in cands if not (c[2] & {"DIESEL", "TDI"})] or cands
+        exact = [n for n, extra, _ in cands if extra is None]
+        cands = [c for c in cands if c[1] is not None]
+        if exact:
+            # Lexus files a 2015 ES 350 under both ES and ES350: keep the numbered name that fits the trim too
+            short = all(re.fullmatch(r"[A-Z]{1,3}", compact(p)) for p in step)
+            cands = [c for c in cands if short and c[1] and c[1][0][:1].isdigit()]
+        else:
+            cands = [c for c in cands if not (set(c[1]) & SPECIAL) or set(c[1]) & SPECIAL & set(want)] or cands
+        score = {n: sum(want.get(t, 0) for t in set(extra) | (full - pt)) for n, extra, full in cands}
+        best = max(score.values(), default=0)
+        return sorted(set(exact) | {n for n in score if score[n] == best and (best or not exact)})
+    return []
+
+def nhtsa_models(make, year, cache):
+    """NHTSA's model names for one make and year (the list complaints are filed under)."""
+    k = f"{make}|{year}"
+    hit = cache.get(k)
+    if hit and (dt.date.today() - dt.date.fromisoformat(hit["at"])).days < MODEL_TTL_DAYS:
+        return hit["m"]
+    q = urllib.parse.urlencode({"make": make, "modelYear": year, "issueType": "c"})
+    try:
+        res = http(f"https://api.nhtsa.gov/products/vehicle/models?{q}").get("results", [])
+    except Exception as e:
+        print("  NHTSA model list failed", k, e)
+        return hit["m"] if hit else None
+    cache[k] = {"at": dt.date.today().isoformat(), "m": sorted({r["model"] for r in res if r.get("model")})}
+    return cache[k]["m"]
+
+def stats_key(d, names):
+    """make|model|year, plus NHTSA's names when they differ from the decoded model (RX 350 and RX 450h differ)."""
+    k = f'{d["Make"]}|{d["Model"]}|{d["ModelYear"]}'
+    same = [nm_tokens(n) for n in names] == [nm_tokens(d["Model"])]
+    return k if same else k + "|" + ("+".join(names) or "none")
+
+def model_stats(d, names, cache):
+    """Model year recall and complaint counts. Recalls are filed under yet other names (F-150, 330I), so the
+    decoded name is asked too and results are merged by campaign and complaint number."""
+    make, model, year = d["Make"], d["Model"], d["ModelYear"]
+    k = stats_key(d, names)
     hit = cache.get(k)
     today = dt.date.today()
     if hit and (today - dt.date.fromisoformat(hit["at"])).days < MODEL_TTL_DAYS:
         return hit
-    q = urllib.parse.urlencode({"make": make, "model": model, "modelYear": year})
+    rec, comp = {}, {}
     try:
-        rec = http(f"https://api.nhtsa.gov/recalls/recallsByVehicle?{q}").get("results", [])
-        comp = http(f"https://api.nhtsa.gov/complaints/complaintsByVehicle?{q}").get("results", [])
+        for nm in dict.fromkeys([model] + names + [p for step in name_probes(d) for p in step]):
+            q = urllib.parse.urlencode({"make": make, "model": nm, "modelYear": year})
+            for r in http(f"https://api.nhtsa.gov/recalls/recallsByVehicle?{q}").get("results", []):
+                rec[r.get("NHTSACampaignNumber")] = r
+        for nm in names or [model]:                  # complaints use NHTSA's names: a Civic Hybrid is not a Civic
+            q = urllib.parse.urlencode({"make": make, "model": nm, "modelYear": year})
+            for c in http(f"https://api.nhtsa.gov/complaints/complaintsByVehicle?{q}").get("results", []):
+                comp[c.get("odiNumber")] = c
     except Exception as e:
         print("  NHTSA lookup failed", k, e)
         return hit
+    rec, comp = list(rec.values()), list(comp.values())
     areas = {}
     for c in comp:
         for p in (c.get("components") or "").split(","):
@@ -267,19 +473,21 @@ def model_stats(make, model, year, cache):
     top = sorted(areas.items(), key=lambda x: -x[1])[:3]
     cache[k] = {"at": today.isoformat(), "rc": len(rec), "c": len(comp),
                 "crash": sum(1 for c in comp if c.get("crash")), "fire": sum(1 for c in comp if c.get("fire")),
-                "top": ", ".join(f"{a.lower()} {n}" for a, n in top)}
+                "top": ", ".join(f"{a.lower()} {n}" for a, n in top), "nhtsa": names}
     return cache[k]
 
 # ---------- NCAP stars ----------
 
-def ncap(make, model, year, body, drive, cache):
-    k = f"{make}|{model}|{year}"
+def ncap(d, names, body, drive, cache):
+    k = stats_key(d, names)
     if k in cache and (dt.date.today() - dt.date.fromisoformat(cache[k]["at"])).days < 90:
         return cache[k]
     out = {"at": dt.date.today().isoformat()}
     try:
-        path = "/".join(urllib.parse.quote(str(x)) for x in (year, "make", make, "model", model))
-        res = http(f"https://api.nhtsa.gov/SafetyRatings/modelyear/{path}").get("Results", [])
+        res = []
+        for nm in names or [d["Model"]]:
+            path = "/".join(urllib.parse.quote(str(x)) for x in (d["ModelYear"], "make", d["Make"], "model", nm))
+            res += http(f"https://api.nhtsa.gov/SafetyRatings/modelyear/{path}").get("Results", [])
         if res:
             want = {"SUV": "SUV", "Pickup": "PU", "Minivan": "VAN", "Van": "VAN", "Sedan": "4 DR",
                     "Coupe": "2 DR", "Convertible": "C", "Hatchback": "HB"}.get(body, "")
@@ -360,9 +568,8 @@ def word_rx(s):
 
 _MAKE_MODELS = {}
 
-def other_models(make, model):
-    """Longer model names from the same make that start with this model, e.g. Rogue Sport for Rogue,
-    Accord Crosstour for Accord. A photo titled with one of those is a different vehicle."""
+def make_models(make):
+    """Every model name vPIC knows for this make."""
     mk = make.lower()
     if mk not in _MAKE_MODELS:
         try:
@@ -370,8 +577,13 @@ def other_models(make, model):
             _MAKE_MODELS[mk] = {r["Model_Name"].strip() for r in res.get("Results", [])}
         except Exception:
             _MAKE_MODELS[mk] = set()
+    return _MAKE_MODELS[mk]
+
+def other_models(make, model):
+    """Longer model names from the same make that start with this model, e.g. Rogue Sport for Rogue,
+    Accord Crosstour for Accord. A photo titled with one of those is a different vehicle."""
     base = model.lower()
-    return [m for m in _MAKE_MODELS[mk] if m.lower().startswith(base + " ") and len(m) > len(model)]
+    return [m for m in make_models(make) if m.lower().startswith(base + " ") and len(m) > len(model)]
 
 def title_ok(t, make, model, allow_overseas):
     if PHOTO_BAD.search(t):
@@ -672,10 +884,10 @@ def plant(d):
 def make_name(mk):
     return mk if mk in ("BMW", "GMC", "KIA", "RAM", "MINI") else mk.title()
 
-def build_car(r, vc, mc, pc, nc):
+def build_car(r, vc, mc, pc, nc, matched, hc):
     v = r["vin"]
     car = {"n": r["n"], "listYear": r["year"], "listMake": r["make"], "plate": f'{r["plate"]} {r["st"]}'.strip(),
-           "vin": v, "lien": tidy(r["lien"]), "flags": []}
+           "vin": v, "lien": tidy(r["lien"]), "flags": [], "history": history.card(v, hc, vin_ok(v))}
     if not vin_ok(v):
         car["flags"].append("VIN not listed by the city, no decode possible" if v == "VIN BLOCKED"
                             else "VIN fails its check digit, likely a typo on the city list")
@@ -692,10 +904,15 @@ def build_car(r, vc, mc, pc, nc):
     if d.get("ModelYear", "").isdigit() and int(d["ModelYear"]) != r["year"]:
         car["flags"].append(f'City list says {r["year"]}, VIN says {d["ModelYear"]}')
     if mk and d.get("Model") and d.get("ModelYear"):
-        s = model_stats(mk, d["Model"], d["ModelYear"], mc)
-        if s:
+        names = matched.get(v, [])
+        k = stats_key(d, names)
+        s = mc.get(k)
+        if names and k != f'{mk}|{d["Model"]}|{d["ModelYear"]}':
+            car["nhtsaAs"] = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+        # NHTSA has no model by this name that year: zero counts would only mean nothing was looked up
+        if s and (s["c"] or s["rc"] or s.get("nhtsa") != []):
             car.update(recalls=s["rc"], complaints=s["c"], crashFire=f'{s["crash"]}/{s["fire"]}', topComplaints=s["top"])
-        st = nc.get(f'{mk}|{d["Model"]}|{d["ModelYear"]}')
+        st = nc.get(k)
         if st and st.get("stars") and st["stars"].isdigit():
             car["stars"] = int(st["stars"]); car["starsFor"] = st["desc"]
         ph = pc.get(f'{year}|{car["make"]}|{car["model"]}')
@@ -710,8 +927,23 @@ def main():
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--pdf"); ap.add_argument("--id")
     ap.add_argument("--no-photos", action="store_true")
+    ap.add_argument("--no-history", action="store_true")
     ap.add_argument("--photo-test", help='comma list like "2011|Volvo|XC90,2025|Nissan|Rogue"')
+    ap.add_argument("--names-check", action="store_true")
     a = ap.parse_args()
+    if a.names_check:
+        vc, nn, out = load(VIN_CACHE, {}), load(NAMES_CACHE, {}), {}
+        for x in load(RAW, {}).values():
+            for r in x["rows"]:
+                d = vc.get(r["vin"])
+                if d and d.get("Make") and d.get("Model") and d.get("ModelYear", "").isdigit():
+                    k = stats_key(d, match_names(d, nhtsa_models(d["Make"], d["ModelYear"], nn) or []))
+                    if k.count("|") > 2:
+                        out[k] = " / ".join(d.get(f, "") for f in ("Trim", "Series", "BodyClass", "BodyCabType"))
+        for k in sorted(out):
+            print(k, "  <-", out[k])
+        print(len(out), "groups differ,", sum(k.endswith("|none") for k in out), "with no NHTSA name")
+        return
     if a.photo_test:
         for item in a.photo_test.split(","):
             parts = item.strip().split("|")
@@ -720,7 +952,8 @@ def main():
 
     raw = load(RAW, {})
     vc, mc = load(VIN_CACHE, {}), load(MODEL_CACHE, {})
-    pc, nc = load(PHOTO_CACHE, {}), load(NCAP_CACHE, {})
+    pc, nc, nn = load(PHOTO_CACHE, {}), load(NCAP_CACHE, {}), load(NAMES_CACHE, {})
+    hc = load(HIST_CACHE, {})
     today = dt.date.today()
     cutoff = (today - dt.timedelta(days=KEEP_PAST_DAYS)).isoformat()
 
@@ -754,24 +987,37 @@ def main():
     order = sorted(raw.values(), key=lambda x: (x["borough"] != "Bronx", x["date"] < today.isoformat(), x["date"]))
     decode_vins([r["vin"] for x in order for r in x["rows"]], vc)
 
-    combos = []
+    combos, stats, matched = [], {}, {}
     for x in order:
         for r in x["rows"]:
             d = vc.get(r["vin"])
             if d and d.get("Make") and d.get("Model") and d.get("ModelYear", "").isdigit():
-                combos.append((d["Make"], d["Model"], d["ModelYear"], body_short(d.get("BodyClass", "")),
-                               DRIVE.get(d.get("DriveType", ""), "")))
-    combos = list(dict.fromkeys(combos))
-    for mk, md, y, b, dr in combos:
-        model_stats(mk, md, y, mc)
-        ncap(mk, md, y, b, dr, nc)
+                names = match_names(d, nhtsa_models(d["Make"], d["ModelYear"], nn) or [])
+                matched[r["vin"]] = names
+                b, dr = body_short(d.get("BodyClass", "")), DRIVE.get(d.get("DriveType", ""), "")
+                stats.setdefault(stats_key(d, names), (d, names, b, dr))
+                combos.append((int(d["ModelYear"]), make_name(d["Make"]), d["Model"], b))
+    for d, names, b, dr in stats.values():
+        model_stats(d, names, mc)
+        ncap(d, names, b, dr, nc)
+    print(f"{len(stats)} model groups, {sum(1 for x in stats.values() if not x[1])} with no NHTSA model name")
+    if not a.no_history:
+        # past listings of each exact VIN, soonest upcoming sale first, Bronx first on a shared day
+        up = sorted((x for x in raw.values() if x["date"] >= today.isoformat()),
+                    key=lambda x: (x["date"], x["borough"] != "Bronx"))
+        cars = [(r["vin"], vc.get(r["vin"], {}).get("Make", ""), vc.get(r["vin"], {}).get("Model", ""))
+                for x in up for r in x["rows"] if vin_ok(r["vin"])]
+        try:
+            history.research(list(dict.fromkeys(cars)), hc, minutes=float(os.environ.get("HISTORY_MINUTES") or 20))
+        except Exception as e:                        # history must never cost an auction update
+            print("history research stopped:", e)
     if not a.no_photos:
-        photos_for(list(dict.fromkeys((int(y), make_name(mk), md, b) for mk, md, y, b, dr in combos)), pc)
+        photos_for(list(dict.fromkeys(combos)), pc)
 
     auctions = []
     for x in sorted(raw.values(), key=lambda x: (x["date"], x["borough"])):
         meta = {k: v for k, v in x.items() if k not in ("rows", "hash")}
-        auctions.append({**meta, "cars": [build_car(r, vc, mc, pc, nc) for r in x["rows"]]})
+        auctions.append({**meta, "cars": [build_car(r, vc, mc, pc, nc, matched, hc) for r in x["rows"]]})
     seen = {}
     for x in auctions:
         for c in x["cars"]:
@@ -787,7 +1033,8 @@ def main():
     DATA.mkdir(exist_ok=True)
     def dump(p, obj): p.write_text(json.dumps(obj, separators=(",", ":"), sort_keys=p != OUT))
     dump(OUT, {"updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"), "auctions": auctions})
-    dump(RAW, raw); dump(VIN_CACHE, vc); dump(MODEL_CACHE, mc); dump(PHOTO_CACHE, pc); dump(NCAP_CACHE, nc)
+    dump(RAW, raw); dump(VIN_CACHE, vc); dump(MODEL_CACHE, mc); dump(PHOTO_CACHE, pc); dump(NCAP_CACHE, nc); dump(NAMES_CACHE, nn)
+    dump(HIST_CACHE, hc)
     print(f"wrote {len(auctions)} auctions, {sum(len(x['cars']) for x in auctions)} lots")
 
 if __name__ == "__main__":

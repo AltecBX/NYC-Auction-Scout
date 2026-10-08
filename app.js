@@ -110,6 +110,8 @@ function renderChips(P) {
   add("No lien", P.filter(x => !x.c.lien).length, st.filter === "clear", () => { st.filter = st.filter === "clear" ? "all" : "clear"; render(); });
   if (st.view === "sale") add("Starred", P.filter(x => isFav(x.a, x.c)).length, st.filter === "star", () => { st.filter = st.filter === "star" ? "all" : "star"; render(); });
   add("Has lien", P.filter(x => x.c.lien).length, st.filter === "lien", () => { st.filter = st.filter === "lien" ? "all" : "lien"; render(); });
+  const nh = P.filter(x => hasHist(x.c)).length;
+  if (nh) add("History found", nh, st.filter === "hist", () => { st.filter = st.filter === "hist" ? "all" : "hist"; render(); });
   if (st.view !== "sale") {
     const boros = Object.entries(P.reduce((m, x) => (m[x.a.borough] = (m[x.a.borough] || 0) + 1, m), {}));
     if (boros.length > 1) {
@@ -127,6 +129,69 @@ function starsHTML(n) {
   return `<span class="stars" aria-label="${n} of 5 stars">${"★".repeat(n)}<span class="off">${"★".repeat(5 - n)}</span></span>`;
 }
 
+// Vehicle history: past listings of this exact VIN found by scripts/history.py during the update run
+const fmtD = iso => { const d = parse(iso); return `${MON[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`; };
+const HIST = {
+  found: "History found", none: "No records found", partial: "No records found, some sources down",
+  unavailable: "Sources unavailable", unchecked: "Not checked",
+};
+const hasHist = c => (c.history || {}).st === "found";
+
+function histChip(h) {
+  const bad = (h.flags || []).filter(f => f.lvl === "bad").length, n = (h.flags || []).length;
+  const cls = h.st !== "found" ? "" : bad ? " bad" : " warn";
+  return `<span class="hchip${cls}">${HIST[h.st] || "Not checked"}${h.st === "found" && n ? `, ${plural(n, "alert")}` : ""}</span>`;
+}
+
+function evHTML(e) {
+  const d = e.dates || [];
+  const when = !d.length ? "Listing date unknown"
+    : d.length > 3 ? `Listed ${d.length} times, ${fmtD(d[0])} to ${fmtD(d[d.length - 1])}` : `Listed ${d.map(fmtD).join(", ")}`;
+  const at = [e.auction && `${e.auction}${e.lot ? " lot " + e.lot : ""}`, e.where].filter(Boolean).join(", ");
+  const facts = [
+    e.miles === 0 ? "Mileage listed as 0 (treated as unknown)" : e.miles ? `${e.miles.toLocaleString("en-US")} miles` : "",
+    e.doc ? `Title document: ${e.doc}` : "", ...(e.damage || []).map(x => `Damage: ${x}`), ...(e.notes || []),
+    e.cond ? `${e.cond} (as listed)` : "", e.keys ? `Keys: ${e.keys}` : "", e.grade ? `Condition grade ${e.grade}` : "",
+    e.status || "", e.bid ? `Bid shown $${e.bid.toLocaleString("en-US")}, not a confirmed sale price` : "",
+  ].filter(Boolean);
+  const name = { americamotors: "AmericaMotors", autousa: "autousa.pro" }[e.src] || e.src;
+  return `<div class="hev">
+    <div class="when">${esc(when)}</div>${at ? `<div class="at">${esc(at)}</div>` : ""}
+    ${facts.length ? `<ul>${facts.map(f => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}
+    <div class="hbtns"><a href="${esc(e.url)}" target="_blank" rel="noopener">Listing on ${esc(name)}</a>${e.photos ? `<a href="${esc(e.photos)}" target="_blank" rel="noopener">Photos</a>` : ""}</div>
+    <div class="seen">From ${esc(name)}, first seen by this site ${fmtD(e.seen)}.${e.gone ? ` No longer on the source as of ${fmtD(e.gone)}, saved copy shown.` : ""}${e.photos ? " Photos stay on the source site." : ""}</div>
+  </div>`;
+}
+
+function histHTML(c) {
+  const h = c.history || { st: "unchecked" };
+  const flags = (h.flags || []).map(f => `<li class="${esc(f.lvl)}">${esc(f.t)}</li>`).join("");
+  const srcTxt = s => s.st === "found" ? "Record found" : s.st === "none" ? "No match"
+    : `Unavailable${s.fail ? ` (${s.fail.err})` : ""}`;
+  const srcs = (h.src || []).map(s => `<li><b>${esc(s.n)}</b>: ${esc(srcTxt(s))}. Checked ${fmtD(s.at)}.${s.fail && s.st !== "error" ? ` Last try ${fmtD(s.fail.at)} failed (${esc(s.fail.err)}).` : ""}</li>`).join("");
+  // BidHistory's terms do not allow copying its data, so only its link is shown
+  const linkOnly = (h.src || []).filter(s => s.id === "bidhistory" && s.st === "found" && s.url).map(s => `<div class="hev">
+    <div class="when">Record on ${esc(s.n)}</div><div class="seen">Its terms do not allow copying the details here. Open it to see dates, mileage, damage and any sale price.</div>
+    <div class="hbtns"><a href="${esc(s.url)}" target="_blank" rel="noopener">Open ${esc(s.n)} record</a></div></div>`).join("");
+  const msg = {
+    found: "Past listings from other sites, matched on the full VIN. They show the car as it was then, not today.",
+    none: "No matching records in the sources checked. That is not a clean history: most cars never pass through these sites, and sellers can pay some sites to remove listings.",
+    partial: "No matching records in the sources that answered. Not a clean history, and some sources could not be checked.",
+    unavailable: "The history sources could not be reached on the last try. Nothing is known yet.",
+    unchecked: h.novin ? "No valid VIN on the city list, so no exact VIN search is possible." : "Not checked yet. Upcoming sales are checked soonest first.",
+  }[h.st] || "Not checked yet.";
+  const manual = c.vin && c.vin.length === 17 && !h.novin ? `<div class="hman"><div class="k">Search yourself, free</div><div class="links">
+      <a href="https://www.google.com/search?q=site%3Abid.cars+${esc(c.vin)}" target="_blank" rel="noopener">Bid.Cars via Google</a>
+      <a href="https://www.google.com/search?q=%22${esc(c.vin)}%22" target="_blank" rel="noopener">Google</a>
+      <a href="https://www.nicb.org/vincheck" target="_blank" rel="noopener">NICB</a></div></div>` : "";
+  return `<details class="hist"><summary><span>Vehicle history</span>${histChip(h)}</summary><div class="hin">
+    ${flags ? `<ul class="hflags">${flags}</ul>` : ""}
+    <p class="hnote">${esc(msg)}</p>
+    ${(h.ev || []).map(evHTML).join("")}${linkOnly}
+    ${srcs ? `<ul class="hsrc">${srcs}</ul>` : ""}
+    ${manual}</div></details>`;
+}
+
 function card({ a, c }) {
   const s = saved[keyOf(a.id, c.n)] || {};
   const yr = c.year || c.listYear;
@@ -137,16 +202,16 @@ function card({ a, c }) {
        <div class="cap">${!ph.y ? "Stock photo of this model, year may differ" : ph.y === c.year ? "Stock photo" : `Stock photo of a ${ph.y}, closest year found`}</div>`
     : `<div class="nophoto"><img src="assets/emblem-128.webp" alt=""><span>No stock photo yet</span></div>`;
   const specs = [c.body, c.engine, c.drive, yr ? `${now.getFullYear() - yr} yrs old` : ""].filter(Boolean);
-  const safety = c.recalls == null ? "" : `<div class="safety">
+  const safety = !c.model ? "" : `<div class="safety">
       <div><div class="v">${c.stars ? starsHTML(c.stars) : "Not rated"}</div><div class="k">NHTSA crash rating</div></div>
-      <div><div class="v">${c.recalls}</div><div class="k">Recalls</div></div>
-      <div><div class="v">${c.complaints}</div><div class="k">Complaints</div></div></div>`;
+      <div><div class="v">${c.recalls ?? "No data"}</div><div class="k">Recalls</div></div>
+      <div><div class="v">${c.complaints ?? "No data"}</div><div class="k">Complaints</div></div></div>`;
   const feats = c.features || [];
   const kv = [
     ["Trim", c.trim], ["Transmission", c.trans], ["Power", c.hp ? `${c.hp} hp` : ""], ["Seats", c.seats],
     ["Built in", c.plant], ["Plate", c.plate], ["VIN", c.vin ? `<span class="vin">${esc(c.vin)}</span>` : ""],
     ["Crash, fire", c.crashFire ? `${esc(c.crashFire)} complaints` : ""], ["Most complaints", c.topComplaints],
-    ["Stars for", c.starsFor],
+    ["Stars for", c.starsFor], ["NHTSA files as", c.nhtsaAs],
   ].filter(x => x[1]).map(([k, v]) => `<dt>${k}</dt><dd>${k === "VIN" ? v : esc(v)}</dd>`).join("");
   const ok = c.vin && c.vin.length === 17 && c.model;
   const links = ok ? `<div class="links">
@@ -170,6 +235,7 @@ function card({ a, c }) {
       <div class="lienbar ${c.lien ? "l" : "c"}">${c.lien ? ICON.lock + `<span>Lien held by <b>${esc(c.lien)}</b></span>` : ICON.check + "<span>No lienholder listed</span>"}</div>
       ${safety}
       ${feats.length ? `<div class="feats">${feats.map(f => `<span>${esc(f)}</span>`).join("")}</div>` : ""}
+      ${histHTML(c)}
       <details class="more"><summary>Details and links</summary>
         <dl class="kv">${kv}</dl>${links}${credit}
       </details>
@@ -190,6 +256,7 @@ function render(scrollTop) {
   const r = P.filter(({ a, c }) => {
     if (st.filter === "clear" && c.lien) return false;
     if (st.filter === "lien" && !c.lien) return false;
+    if (st.filter === "hist" && !hasHist(c)) return false;
     if (st.filter === "star" && !isFav(a, c)) return false;
     if (st.body !== "all" && c.body !== st.body) return false;
     if (st.where !== "all" && a.borough !== st.where) return false;

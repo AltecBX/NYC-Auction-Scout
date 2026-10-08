@@ -173,6 +173,36 @@ button,select,input{font:inherit;color:inherit}
 .feats{display:flex;flex-wrap:wrap;gap:6px}
 .feats span{font-size:.84rem;color:var(--ink-2);border:1px solid var(--rule);border-radius:999px;padding:2px 9px}
 
+/* vehicle history: past listings of the exact VIN. Never green: no record is not a clean history */
+.hist{border:1px solid var(--rule);border-radius:10px;padding:0 10px}
+.hist summary{cursor:pointer;min-height:44px;display:flex;align-items:center;gap:8px;font-weight:600;list-style:none}
+.hist summary::-webkit-details-marker{display:none}
+.hist summary::after{content:"";width:8px;height:8px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;
+  transform:rotate(45deg);margin:-4px 2px 0 2px;transition:transform .2s;flex:0 0 auto}
+.hist[open] summary::after{transform:rotate(225deg);margin-top:4px}
+.hchip{margin-left:auto;font-size:.8rem;font-weight:700;border-radius:999px;padding:2px 9px;background:var(--chip);color:var(--ink-2);text-align:right}
+.hchip.warn{background:var(--warn-bg);color:var(--warn)}
+.hchip.bad{background:var(--lien-bg);color:var(--lien)}
+.hin{padding:0 0 10px;display:flex;flex-direction:column;gap:10px;font-size:.92rem;min-width:0}
+.hflags{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
+.hflags li{border-radius:9px;padding:7px 10px;background:var(--chip);overflow-wrap:anywhere}
+.hflags li.warn{background:var(--warn-bg);color:var(--warn)}
+.hflags li.bad{background:var(--lien-bg);color:var(--lien)}
+.hnote{margin:0;font-size:.84rem;color:var(--ink-2)}
+.hev{border-left:3px solid var(--rule);padding:2px 0 2px 10px;overflow-wrap:anywhere}
+.hev .when{font-weight:700}
+.hev .at{color:var(--ink-2)}
+.hev ul{margin:4px 0 6px;padding-left:18px}
+.hev .seen{font-size:.8rem;color:var(--ink-2)}
+.hbtns{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0}
+.hbtns a{min-height:36px;display:inline-flex;align-items:center;padding:0 12px;border-radius:9px;border:1px solid var(--rule);
+  text-decoration:none;font-weight:600;font-size:.88rem}
+.hsrc{margin:0;padding:0;list-style:none;font-size:.84rem;color:var(--ink-2);display:flex;flex-direction:column;gap:4px}
+.hsrc b{color:var(--ink);font-weight:600}
+.hman .k{font-size:.84rem;color:var(--ink-2);margin-bottom:6px}
+.hman .links{margin:0}
+.hman .links a{text-align:center;padding:4px 6px;line-height:1.15}
+
 .more{border-top:1px solid var(--rule);padding-top:4px}
 .more summary{cursor:pointer;min-height:40px;display:flex;align-items:center;font-weight:600;color:var(--enamel);list-style:none}
 .more summary::-webkit-details-marker{display:none}
