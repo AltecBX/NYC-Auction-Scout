@@ -429,14 +429,21 @@ def find_photo(year, make, model, body=""):
         v = view_check.view_of(entry["img"], WIKI_UA)
         time.sleep(1)
         if DEBUG:
-            print("      view:", v, entry["t"])
+            print("      view:", v and (v[0], {k: x for k, x in v[1].items() if x > .05}), entry["t"])
         if v is None:
             return False
-        entry["view"] = v[0]
-        if v[0] == "front":
+        top, pr = v
+        entry["view"] = top
+        if top == "front":
             return True
-        if v[0] in ("side", "rear"):
-            fallback.append(entry)
+        # a front three quarter shot often scores as "side"; the file name saying front settles it
+        if top == "side" and pr["front"] > pr["rear"] and FRONT.search(entry["t"]):
+            entry["view"] = "front"
+            return True
+        if top == "side":
+            fallback.append((0 if pr["front"] > pr["rear"] else 1, entry))
+        elif top == "rear":
+            fallback.append((2, entry))
         return False
 
     mk = make.replace("-Benz", "")
@@ -493,7 +500,7 @@ def find_photo(year, make, model, body=""):
     if wiki and judge(wiki):
         return wiki
     if fallback:
-        return sorted(fallback, key=lambda e: e.get("view") != "side")[0]
+        return sorted(fallback, key=lambda x: x[0])[0][1]
     return wiki
 
 def series_alias(make, model):

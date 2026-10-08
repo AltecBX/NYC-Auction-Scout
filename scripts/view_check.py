@@ -36,7 +36,7 @@ def available():
     return bool(_load())
 
 def view_of(url, ua):
-    """Returns (label, confidence) or None when the image can't be checked."""
+    """Returns (top label, {label: probability}) or None when the image can't be checked."""
     m = _load()
     if not m:
         return None
@@ -60,6 +60,5 @@ def view_of(url, ua):
         f = model.encode_image(pre(img).unsqueeze(0))
         f /= f.norm(dim=-1, keepdim=True)
         p = (100 * f @ text.T).softmax(dim=-1)[0].tolist()
-    keys = list(LABELS)
-    best = max(range(len(keys)), key=lambda i: p[i])
-    return keys[best], round(p[best], 3)
+    probs = dict(zip(LABELS, (round(x, 3) for x in p)))
+    return max(probs, key=probs.get), probs
