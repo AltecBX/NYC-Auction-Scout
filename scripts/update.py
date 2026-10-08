@@ -145,14 +145,28 @@ def join_lien(cur, frag):
         return cur + " " + frag
     return cur + " / " + frag
 
-ADDR = re.compile(r"\b\d{2,5}\s+(?:[A-Z][A-Za-z']*\s+){1,3}(?:STREET|ST|AVENUE|AVE|BOULEVARD|BLVD|ROAD|RD|PLACE|PL)\b\.?"
+ADDR = re.compile(r"\b\d{2,5}\s+(?:[A-Z][A-Za-z']*\s+){1,3}(?:STREET|ST|AVENUE|AVE|BOULEVARD|BLVD|ROAD|RD|PLACE|PL|PARKWAY|PKWY|DRIVE|DR|LOOP|LANE|LN|HIGHWAY|HWY)\b\.?"
                   r"(?:,?\s*(?:BRONX|BROOKLYN|QUEENS|STATEN ISLAND|NEW YORK|[A-Z][a-z]+(?: [A-Z][a-z]+)?))?(?:,?\s*N\.?\s?Y\.?)?(?:,?\s*\d{5})?", re.I)
 
 def nice(s):
     s = " ".join(w if re.fullmatch(r"(N\.?Y\.?|NY)", w, re.I) else w.capitalize() for w in s.split())
     return re.sub(r"'S\b", "'s", s.replace("N.y.", "N.Y."))
 
+SALE_AT = re.compile(r"(?:o.?clock\s+in\s+the\s+(?:morning|afternoon)|\d{1,2}:\d{2}\s*[AP]\.?\s?M\.?|noon)\s*,?\s+at\s+"
+                     r"(.{6,140}?\b(?:N\.?\s?Y\.?|NEW YORK)\.?,?\s*\d{5})\b", re.I)
+CITY = r"(BRONX|BROOKLYN|QUEENS|STATEN ISLAND|NEW YORK|FAR ROCKAWAY|JAMAICA|LONG ISLAND CITY|ASTORIA|MASPETH|COLLEGE POINT)"
+
+def tidy_place(p):
+    p = re.sub(r"\s+", " ", p).strip(" ,.")
+    p = re.sub(r"\s+(\d[\d\-]*\s+[A-Za-z])", r", \1", p, count=1)              # venue, street number
+    p = re.sub(rf",?\s+{CITY},?\s+(N\.?\s?Y\.?|NEW YORK)\.?,?\s*(\d{{5}})$", r", \1, NY \3", p, flags=re.I)
+    p = re.sub(r"\s*,\s*,", ",", p)
+    return nice(p).replace(", Ny ", ", NY ")
+
 def find_location(flat):
+    m = SALE_AT.search(flat)
+    if m and not re.search(r"ADAMS|JORALEMON", m.group(1), re.I):
+        return {"location": tidy_place(m.group(1))}
     for m in ADDR.finditer(flat):
         if re.search(r"ADAMS|JORALEMON", m.group(0), re.I):
             continue
