@@ -137,16 +137,16 @@ function card({ a, c }) {
        <div class="cap">${!ph.y ? "Stock photo of this model, year may differ" : ph.y === c.year ? "Stock photo" : `Stock photo of a ${ph.y}, closest year found`}</div>`
     : `<div class="nophoto"><img src="assets/emblem-128.webp" alt=""><span>No stock photo yet</span></div>`;
   const specs = [c.body, c.engine, c.drive, yr ? `${now.getFullYear() - yr} yrs old` : ""].filter(Boolean);
-  const safety = c.recalls == null ? "" : `<div class="safety">
+  const safety = !c.model ? "" : `<div class="safety">
       <div><div class="v">${c.stars ? starsHTML(c.stars) : "Not rated"}</div><div class="k">NHTSA crash rating</div></div>
-      <div><div class="v">${c.recalls}</div><div class="k">Recalls</div></div>
-      <div><div class="v">${c.complaints}</div><div class="k">Complaints</div></div></div>`;
+      <div><div class="v">${c.recalls ?? "No data"}</div><div class="k">Recalls</div></div>
+      <div><div class="v">${c.complaints ?? "No data"}</div><div class="k">Complaints</div></div></div>`;
   const feats = c.features || [];
   const kv = [
     ["Trim", c.trim], ["Transmission", c.trans], ["Power", c.hp ? `${c.hp} hp` : ""], ["Seats", c.seats],
     ["Built in", c.plant], ["Plate", c.plate], ["VIN", c.vin ? `<span class="vin">${esc(c.vin)}</span>` : ""],
     ["Crash, fire", c.crashFire ? `${esc(c.crashFire)} complaints` : ""], ["Most complaints", c.topComplaints],
-    ["Stars for", c.starsFor],
+    ["Stars for", c.starsFor], ["NHTSA files as", c.nhtsaAs],
   ].filter(x => x[1]).map(([k, v]) => `<dt>${k}</dt><dd>${k === "VIN" ? v : esc(v)}</dd>`).join("");
   const ok = c.vin && c.vin.length === 17 && c.model;
   const links = ok ? `<div class="links">
