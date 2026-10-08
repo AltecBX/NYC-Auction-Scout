@@ -20,13 +20,17 @@ import urllib.error, urllib.parse, urllib.request
 
 UA = "NYCAuctionScout/1.0 (+https://github.com/AltecBX/NYC-Auction-Scout)"
 GAP = 3.0                  # seconds between two requests to the same site
-SITE_GAP = {"vehicles.autousa.pro": 6.0}   # it dropped connections from GitHub's runners at 3s, Oct 8 2026
+SITE_GAP = {"vehicles.autousa.pro": 6.0}
+# autousa.pro stops answering GitHub's runners after about 28 requests in a run (Oct 8 2026, at 3s and at 6s gaps).
+# Stay under that limit instead of working around it; cards link to its free search for the rest.
+SITE_CAP = {"vehicles.autousa.pro": 20}
 TRIES = 2                  # per request, only for timeouts and 5xx
 BREAKER = 3                # failed requests in a row before a site is skipped for the rest of the run
 RECHECK = {"found": 30, "none": 10, "error": 0}     # days before a source is asked again about a VIN
 AUTOUSA_DETAILS = 2        # detail pages read per VIN (newest and oldest run)
 
 SOURCES = {"americamotors": "AmericaMotors", "autousa": "autousa.pro", "bidhistory": "BidHistory"}
+HOSTS = {"americamotors": "americamotors.com", "autousa": "vehicles.autousa.pro", "bidhistory": "bidhistory.info"}
 VIN_RX = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$")
 BRAND = re.compile(r"SALVAGE|\bSLVG\b|REBUILT|\bREBLD\b|\bRBLT\b|REBUILDABLE|RECONSTRUCTED|FLOOD|JUNK|NON ?REPAIRABLE|"
                    r"NONREPAIRABLE|DESTRUCTION|DISMANTL|PARTS ONLY|SCRAP|TOTAL LOSS|CERT OF DESTR|LEMON", re.I)
@@ -43,7 +47,7 @@ class Fetcher:
     def __init__(self, gap=GAP, opener=None, sleep=time.sleep, clock=time.time):
         self.gap, self.sleep, self.clock = gap, sleep, clock
         self.open = opener or self._urlopen
-        self.last, self.fails, self.err = {}, {}, {}
+        self.last, self.fails, self.err, self.count = {}, {}, {}, {}
 
     @staticmethod
     def _urlopen(url):
@@ -57,6 +61,9 @@ class Fetcher:
     def down(self, host):
         return self.fails.get(host, 0) >= BREAKER
 
+    def capped(self, host):
+        return self.count.get(host, 0) >= SITE_CAP.get(host, 10 ** 9)
+
     def get(self, url):
         """(status, body) for 200, 404 and 410. Anything else raises Unavailable."""
         host = urllib.parse.urlparse(url).netloc
@@ -68,6 +75,7 @@ class Fetcher:
             if wait > 0:
                 self.sleep(wait)
             self.last[host] = self.clock()
+            self.count[host] = self.count.get(host, 0) + 1
             try:
                 code, body = self.open(url)
             except Exception as e:                          # timeout, DNS, reset
@@ -306,12 +314,14 @@ def research(cars, cache, minutes=20, fetcher=None, today=None, log=print):
             continue
         entry = cache.setdefault(vin, {})
         todo = [s for s in SOURCES if due(entry, s, today)]
+        todo = [s for s in todo if not f.capped(HOSTS[s])]
         if not todo:
             continue
         asked += 1
         for src in todo:
-            host = {"americamotors": "americamotors.com", "autousa": "vehicles.autousa.pro",
-                    "bidhistory": "bidhistory.info"}[src]
+            host = HOSTS[src]
+            if f.capped(host):
+                continue                                 # its limit for this run is used; asked again next run
             try:
                 if f.down(host):
                     raise Unavailable("skipped after repeated failures this run")

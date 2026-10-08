@@ -204,6 +204,18 @@ class Research(unittest.TestCase):
                 f.get("https://americamotors.com/x/x/" + VIN)
         self.assertEqual(len(web.calls), H.BREAKER * H.TRIES)
 
+    def test_site_cap_is_respected_without_recording_errors(self):
+        f, web = fetcher({"americamotors.com": (410, ""), "autousa.pro": (200, "No results found"),
+                          "bidhistory.info": (404, "")})
+        cars = [(VIN[:-4] + f"{i:04d}", "Ford", "Focus") for i in range(H.SITE_CAP["vehicles.autousa.pro"] + 5)]
+        cache = {}
+        H.research(cars, cache, fetcher=f, today=TODAY, log=lambda *a: None)
+        self.assertEqual(sum("autousa" in u for u in web.calls), H.SITE_CAP["vehicles.autousa.pro"])
+        self.assertEqual(sum("americamotors" in u for u in web.calls), len(cars))      # other sites carry on
+        last = cache[cars[-1][0]]["src"]
+        self.assertNotIn("autousa", last)                                              # not checked, not "down"
+        self.assertTrue(H.due(cache[cars[-1][0]], "autousa", TODAY))
+
     def test_removed_record_is_kept_and_marked(self):
         cache, _ = self.run_once({"americamotors.com": (200, am_page(VIN))})
         cache, _ = self.run_once({"americamotors.com": (410, "")}, cache, today="2026-11-20")
