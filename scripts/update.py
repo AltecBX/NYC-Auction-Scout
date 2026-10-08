@@ -297,7 +297,7 @@ def ncap(make, model, year, body, drive, cache):
 
 # ---------- stock photo (Wikimedia Commons, then Wikipedia) ----------
 
-PHOTO_VERSION = 4
+PHOTO_VERSION = 5
 PHOTO_BAD = re.compile(r"interior|\bengine|\bdash|cockpit|\brear\b|(?<!hatch)\bback\b|badge|emblem|\blogo|\bwheels?\b(?!base)|"
                        r"\brims?\b|\bseats?\b|\btrunk|\bboot\b|crash|wreck|damag|tail ?light|head ?light|steering|odometer|"
                        r"gauge|instrument|\bconsole|detail|\bgrille|\bhood\b|mirror|police|taxi|\bfire\b|ambulance|"
@@ -408,6 +408,21 @@ BODY_CLASH = {"Sedan": r"wagon|tourer|touring|estate|avant|sportback|kombi|varia
               "Coupe": r"sedan|saloon|wagon|estate|tourer", "Hatchback": r"sedan|saloon|wagon|estate",
               "Pickup": r"\bsuv\b|van\b", "Convertible": r"sedan|saloon|wagon"}
 
+def accept_view(v, title):
+    """(use now, view label, fallback tier or None). A whole car seen from the front wins.
+    A front three quarter shot often scores as "side"; the file name saying front settles it."""
+    top, pr = v
+    close = pr.get("detail", 0) + pr.get("headlight", 0)
+    if top == "front" and pr["front"] >= 0.4 and close < 0.25:
+        return True, "front", None
+    if top == "side" and pr["front"] > pr["rear"] and close < 0.25 and FRONT.search(title):
+        return True, "front", None
+    if top == "side":
+        return False, "side", 0 if pr["front"] > pr["rear"] else 1
+    if top == "rear":
+        return False, "rear", 2
+    return False, top, None
+
 def find_photo(year, make, model, body=""):
     """Exterior photo of this make, model and year, front view whenever one exists. Order of preference:
     1. Commons file named with this model year right before the make or model, US version, then up to 2 years
@@ -432,18 +447,12 @@ def find_photo(year, make, model, body=""):
             print("      view:", v and (v[0], {k: x for k, x in v[1].items() if x > .05}), entry["t"])
         if v is None:
             return False
-        top, pr = v
-        entry["view"] = top
-        if top == "front":
+        ok, label, tier = accept_view(v, entry["t"])
+        entry["view"] = label
+        if ok:
             return True
-        # a front three quarter shot often scores as "side"; the file name saying front settles it
-        if top == "side" and pr["front"] > pr["rear"] and FRONT.search(entry["t"]):
-            entry["view"] = "front"
-            return True
-        if top == "side":
-            fallback.append((0 if pr["front"] > pr["rear"] else 1, entry))
-        elif top == "rear":
-            fallback.append((2, entry))
+        if tier is not None:
+            fallback.append((tier, entry))
         return False
 
     mk = make.replace("-Benz", "")
@@ -555,6 +564,15 @@ def photos_for(combos, cache):
         hit = cache.get(k)
         if hit and photo_still_good(hit, mk, md):
             continue
+        if hit and hit.get("v") == 4 and "img" in hit and view_check.available() and time.time() < stop_at:
+            # last version's pick: look at it again with the stricter rule before searching from scratch
+            v = view_check.view_of(hit["img"], WIKI_UA)
+            time.sleep(0.5)
+            if v:
+                ok, label, tier = accept_view(v, hit.get("t", ""))
+                if ok or (tier == 0 and hit.get("view") == "side"):
+                    hit.update(v=PHOTO_VERSION, view=label)
+                    continue
         if hit and hit.get("v") == PHOTO_VERSION and "none" in hit \
                 and (today - dt.date.fromisoformat(hit["none"])).days < PHOTO_RETRY_DAYS:
             continue

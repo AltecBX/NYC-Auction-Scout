@@ -13,6 +13,7 @@ LABELS = {
     "interior": "a photo of the inside of a car, showing the dashboard, seats or steering wheel",
     "engine": "a photo of a car engine under the hood",
     "detail": "a close up photo of a car part, wheel or badge",
+    "headlight": "a close up photo of a single car headlight or grille",
 }
 
 def _load():
