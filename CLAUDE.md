@@ -32,6 +32,7 @@ Jerry's site for NYC Department of Finance (City Sheriff) vehicle auctions. He u
 Cash only at the winning bid, no keys, as is, liens stay with the vehicle and the lienholder can repossess, remove by 5:00pm or $20/day storage, Certificate of Sale goes to DMV for title.
 
 ## Jerry's preferences for this project
+- Always live: when coding is done and checks pass, merge to `main` so GitHub Pages deploys it, then run "Update auction lists" if the change affects data. Jerry checks the live site, not branches.
 - Mobile first. Most use is on an iPhone at the auction. No horizontal scroll, tap targets 36px+.
 - No hyphens or em dashes in any visible text.
 - Plain, short copy. No filler.
