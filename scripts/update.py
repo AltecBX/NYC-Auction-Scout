@@ -456,7 +456,20 @@ def find_photo(year, make, model, body=""):
                         best = (sc, photo_entry(ii, y, t, "near" if y != year else "exact"))
                 if best:
                     return best[1]
+    alias = series_alias(make, model)
+    if alias:
+        return find_photo(year, make, alias, body)
     return wiki_lead_photo(make, model)
+
+def series_alias(make, model):
+    """BMW and Mercedes VINs decode to model numbers (740i, 328xi, E350) that photos rarely use."""
+    m = re.match(r"^(\d)\d\d", model)
+    if make.upper() == "BMW" and m:
+        return f"{m.group(1)} Series"
+    m = re.match(r"^([A-Z]{1,3})\d{2,3}", model)
+    if make.lower().startswith("mercedes") and m and "Class" not in model:
+        return f"{m.group(1)}-Class"
+    return None
 
 def wiki_lead_photo(make, model):
     mk = make if make.upper() in ("BMW", "GMC") else make.title()
