@@ -541,7 +541,12 @@ def series_alias(make, model):
 def wiki_lead_photo(make, model):
     mk = make if make.upper() in ("BMW", "GMC") else make.title()
     first = f"{mk} {model} (North America)" if split_market(make, model) else None
-    for title in (first, f"{mk} {model}", f"{mk} {model.split()[0]}" if " " in model else None):
+    clean = re.split(r"\s*[/,(]", model)[0].strip()          # NQR/NRR, Ninety Eight (98), YB50QT, YB150T
+    tries = [first, f"{mk} {model}", f"{mk} {clean}" if clean != model else None,
+             f"{mk} {clean.split()[0]}" if " " in clean else None,
+             {"isuzu": "Isuzu Elf", "hino": "Hino Ranger", "mitsubishi fuso": "Mitsubishi Fuso Canter",
+              "ic bus": "IC Bus"}.get(make.lower())]
+    for title in dict.fromkeys(t for t in tries if t):
         if not title:
             continue
         d = wm_api("en.wikipedia.org", {"action": "query", "titles": title, "redirects": 1,
