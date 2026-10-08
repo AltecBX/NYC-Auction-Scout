@@ -182,6 +182,7 @@ function histHTML(c) {
   }[h.st] || "Not checked yet.";
   const manual = c.vin && c.vin.length === 17 && !h.novin ? `<div class="hman"><div class="k">Search yourself, free</div><div class="links">
       <a href="https://www.google.com/search?q=site%3Abid.cars+${esc(c.vin)}" target="_blank" rel="noopener">Bid.Cars via Google</a>
+      <a href="https://vehicles.autousa.pro/search/?vin=${esc(c.vin)}" target="_blank" rel="noopener">autousa.pro</a>
       <a href="https://www.google.com/search?q=%22${esc(c.vin)}%22" target="_blank" rel="noopener">Google</a>
       <a href="https://www.nicb.org/vincheck" target="_blank" rel="noopener">NICB</a></div></div>` : "";
   return `<details class="hist"><summary><span>Vehicle history</span>${histChip(h)}</summary><div class="hin">

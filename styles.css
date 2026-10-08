@@ -200,7 +200,7 @@ button,select,input{font:inherit;color:inherit}
 .hsrc{margin:0;padding:0;list-style:none;font-size:.84rem;color:var(--ink-2);display:flex;flex-direction:column;gap:4px}
 .hsrc b{color:var(--ink);font-weight:600}
 .hman .k{font-size:.84rem;color:var(--ink-2);margin-bottom:6px}
-.hman .links{margin:0}
+.hman .links{margin:0;grid-template-columns:repeat(2,1fr)}
 .hman .links a{text-align:center;padding:4px 6px;line-height:1.15}
 
 .more{border-top:1px solid var(--rule);padding-top:4px}
