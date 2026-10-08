@@ -133,8 +133,8 @@ function card({ a, c }) {
   const name = c.model ? `${c.year} ${esc(c.make)} ${esc(c.model)}` : `${esc(c.listYear || "")} ${esc(c.listMake || "Vehicle")}`;
   const ph = c.photo;
   const shot = ph
-    ? `<img src="${esc(ph.img)}" alt="Stock photo of a ${ph.y} ${esc(c.make)} ${esc(c.model)}" loading="lazy" decoding="async">
-       <div class="cap">${ph.y === c.year ? "Stock photo" : `Stock photo of a ${ph.y}, closest year found`}</div>`
+    ? `<img src="${esc(ph.img)}" alt="Stock photo of a ${esc(c.make)} ${esc(c.model)}" loading="lazy" decoding="async">
+       <div class="cap">${ph.k === "model" || !ph.y ? "Stock photo of this model, year may differ" : ph.y === c.year ? "Stock photo" : `Stock photo of a ${ph.y}, closest year found`}</div>`
     : `<div class="nophoto"><img src="assets/emblem-128.webp" alt=""><span>No stock photo yet</span></div>`;
   const specs = [c.body, c.engine, c.drive, yr ? `${now.getFullYear() - yr} yrs old` : ""].filter(Boolean);
   const safety = c.recalls == null ? "" : `<div class="safety">

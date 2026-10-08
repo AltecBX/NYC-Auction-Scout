@@ -295,12 +295,13 @@ def ncap(make, model, year, body, drive, cache):
 # ---------- stock photo (Wikimedia Commons, then Wikipedia) ----------
 
 PHOTO_VERSION = 3
-PHOTO_BAD = re.compile(r"interior|engine|dash|cockpit|rear|back|badge|emblem|logo|wheel|rim\b|seat|trunk|boot|crash|"
-                       r"wreck|damag|tail ?light|head ?light|steering|odometer|gauge|instrument|console|detail|grille|"
-                       r"hood|mirror|police|taxi|\bcab\b|fire|ambulance|race|racing|rally|nascar|drift|modified|tuned|"
-                       r"custom|concept|prototype|interieur|innenraum|heck|\bmotor\b|cutaway|chassis|model car|toy|"
-                       r"lego|diecast|die.cast|scale|sketch|drawing|inside|cabin|cargo|armatur|salpicadero|habitacle|"
-                       r"intérieur|interno|innen|tachometer|speedometer|key\b|door panel|underside|tire|tyre", re.I)
+PHOTO_BAD = re.compile(r"interior|\bengine|\bdash|cockpit|\brear\b|(?<!hatch)\bback\b|badge|emblem|\blogo|\bwheels?\b(?!base)|"
+                       r"\brims?\b|\bseats?\b|\btrunk|\bboot\b|crash|wreck|damag|tail ?light|head ?light|steering|odometer|"
+                       r"gauge|instrument|\bconsole|detail|\bgrille|\bhood\b|mirror|police|taxi|\bfire\b|ambulance|"
+                       r"\brac(?:e|ing)\b|\brally|nascar|\bdrift|modified|tuned|concept|prototype|interieur|innenraum|\bheck\b|"
+                       r"\bmotor\b|cutaway|chassis|model car|\btoys?\b|\blego\b|diecast|die.cast|\bscale\b|sketch|drawing|"
+                       r"\binside\b|\bcabin\b|\bcargo\b|armatur|salpicadero|habitacle|intérieur|interno|\binnen|tachometer|"
+                       r"speedometer|\bkeys?\b|door panel|underside|\btires?\b|\btyres?\b", re.I)
 # checked against the file's categories and description, where words like "rear-wheel drive" are harmless
 VIEW_BAD = re.compile(r"interior|interieur|intérieur|innen|cockpit|dashboard|armaturen|steering wheel|\bseats?\b|"
                       r"trunk|cargo area|boot space|engine bay|engine compartment|motorraum|under the hood|"
