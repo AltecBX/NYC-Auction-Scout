@@ -398,7 +398,13 @@ US_CAT = re.compile(r"in the United States|in (?:New York|California|Texas|Flori
                     r"Illinois|Michigan|Ohio|Pennsylvania|New Jersey|Massachusetts|Georgia|North Carolina|Arizona|"
                     r"Colorado|Oregon|Minnesota|Wisconsin|Tennessee|Indiana|Missouri|Connecticut)|North America", re.I)
 
-def find_photo(year, make, model):
+DEBUG = bool(os.environ.get("PHOTO_DEBUG"))
+BODY_CLASH = {"Sedan": r"wagon|tourer|touring|estate|avant|sportback|kombi|variant|hatch|coupe|convertible|cabrio",
+              "SUV": r"pickup|pick-up|\bute\b|convertible", "Minivan": r"pickup|cargo van",
+              "Coupe": r"sedan|saloon|wagon|estate|tourer", "Hatchback": r"sedan|saloon|wagon|estate",
+              "Pickup": r"\bsuv\b|van\b", "Convertible": r"sedan|saloon|wagon"}
+
+def find_photo(year, make, model, body=""):
     """Exterior photo of this make, model and year. Order of preference:
     1. Commons file named with this model year right before the make or model, US version, front view first,
        then up to 2 years away, then overseas versions. Photo dates in titles never count as model years.
@@ -421,7 +427,12 @@ def find_photo(year, make, model):
                 best = None
                 for p in results[y]:
                     t = p["title"][5:].rsplit(".", 1)[0]
-                    if not yr.search(t) or not md_rx.search(t) or not title_ok(t, make, model, allow):
+                    why = ("year" if not yr.search(t) else "model" if not md_rx.search(t)
+                           else "title" if not title_ok(t, make, model, allow)
+                           else "body" if body in BODY_CLASH and re.search(BODY_CLASH[body], t, re.I) else "")
+                    if DEBUG:
+                        print(f"    {y} {'abroad ok' if allow else 'us'} {why or 'pass'}: {t}")
+                    if why:
                         continue
                     ii = p["imageinfo"][0]
                     if ii.get("width", 0) < ii.get("height", 1) * 1.15 or ii.get("width", 0) < 640:
@@ -429,6 +440,7 @@ def find_photo(year, make, model):
                     cats = " ".join(c["title"] for c in p.get("categories", []))
                     desc = strip_html(ii.get("extmetadata", {}).get("ImageDescription", {}).get("value"))[:400]
                     if VIEW_BAD.search(cats) or VIEW_BAD.search(desc):
+                        if DEBUG: print("      view rejected:", (VIEW_BAD.search(cats) or VIEW_BAD.search(desc)).group(0))
                         continue
                     if not allow and (ABROAD.search(cats) or NON_US.search(desc)):
                         continue
@@ -456,6 +468,7 @@ def wiki_lead_photo(make, model):
         time.sleep(1)
         pages = list(d.get("query", {}).get("pages", {}).values())
         name = pages[0].get("pageimage") if pages and "missing" not in pages[0] else None
+        if DEBUG: print("    wiki", title, "->", name)
         if not name or PHOTO_BAD.search(name):
             continue
         info = wm_api("commons.wikimedia.org", {"action": "query", "titles": "File:" + name, "prop": "imageinfo",
@@ -478,7 +491,7 @@ def photos_for(combos, cache):
     today = dt.date.today()
     budget = int(os.environ.get("PHOTO_BUDGET") or PHOTO_BUDGET)
     done = 0
-    for y, mk, md in combos:
+    for y, mk, md, body in combos:
         k = f"{y}|{mk}|{md}"
         hit = cache.get(k)
         if hit and photo_still_good(hit, mk, md):
@@ -490,13 +503,13 @@ def photos_for(combos, cache):
             break
         done += 1
         try:
-            ph = find_photo(y, mk, md)
+            ph = find_photo(y, mk, md, body)
         except Exception as e:
             print("  photo lookup failed", k, e)
             continue
         cache[k] = ph if ph else {"none": today.isoformat(), "v": PHOTO_VERSION}
     if done:
-        found = sum(1 for y, mk, md in combos if cache.get(f"{y}|{mk}|{md}", {}).get("v") == PHOTO_VERSION
+        found = sum(1 for y, mk, md, _ in combos if cache.get(f"{y}|{mk}|{md}", {}).get("v") == PHOTO_VERSION
                     and "img" in cache[f"{y}|{mk}|{md}"])
         print(f"photo lookups this run: {done}, models with a checked photo: {found}/{len(combos)}")
 
@@ -601,8 +614,8 @@ def main():
     a = ap.parse_args()
     if a.photo_test:
         for item in a.photo_test.split(","):
-            y, mk, md = item.strip().split("|")
-            print(item, "->", json.dumps(find_photo(int(y), mk, md)))
+            parts = item.strip().split("|")
+            print(item, "->", json.dumps(find_photo(int(parts[0]), parts[1], parts[2], parts[3] if len(parts) > 3 else "")))
         return
 
     raw = load(RAW, {})
@@ -653,7 +666,7 @@ def main():
         model_stats(mk, md, y, mc)
         ncap(mk, md, y, b, dr, nc)
     if not a.no_photos:
-        photos_for(list(dict.fromkeys((int(y), make_name(mk), md) for mk, md, y, b, dr in combos)), pc)
+        photos_for(list(dict.fromkeys((int(y), make_name(mk), md, b) for mk, md, y, b, dr in combos)), pc)
 
     auctions = []
     for x in sorted(raw.values(), key=lambda x: (x["date"], x["borough"])):

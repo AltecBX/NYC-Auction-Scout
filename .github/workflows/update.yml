@@ -36,6 +36,8 @@ jobs:
       - run: pip install pdfplumber==0.11.4
       - name: Test photo picks
         if: ${{ inputs.photo_test != '' && inputs.photo_test != null }}
+        env:
+          PHOTO_DEBUG: "1"
         run: python scripts/update.py --photo-test "${{ inputs.photo_test }}"
       - name: Pull lists and decode VINs
         if: ${{ !inputs.photo_test }}
