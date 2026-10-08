@@ -15,6 +15,9 @@ DATA = ROOT / "data"
 OUT = DATA / "auctions.json"
 VIN_CACHE = DATA / "vin_cache.json"
 MODEL_CACHE = DATA / "model_cache.json"
+PHOTO_CACHE = DATA / "photo_cache.json"
+NCAP_CACHE = DATA / "ncap_cache.json"
+RAW = DATA / "raw.json"
 
 PAGE = "https://www.nyc.gov/site/finance/vehicles/auctions.page"
 BASE = "https://www.nyc.gov"
@@ -22,6 +25,10 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 KEEP_PAST_DAYS = 14
 MODEL_TTL_DAYS = 30
+PHOTO_RETRY_DAYS = 21          # look again for models that had no photo
+PHOTO_BUDGET = 450             # max new photo lookups per run, keeps runs short
+VIN_CACHE_VERSION = 2
+WIKI_UA = "NYCAuctionScout/1.0 (https://github.com/AltecBX/NYC-Auction-Scout)"
 
 BOROUGHS = {"bronx": "Bronx", "brooklyn": "Brooklyn", "queens": "Queens",
             "statenisland": "Staten Island", "manhattan": "Manhattan"}
@@ -196,17 +203,28 @@ def parse_pdf(blob):
 
 # ---------- NHTSA ----------
 
+VPIC_KEEP = ["Make", "Model", "ModelYear", "Trim", "Series", "BodyClass", "DisplacementL", "EngineCylinders",
+             "EngineHP", "Turbo", "FuelTypePrimary", "ElectrificationLevel", "DriveType", "TransmissionStyle",
+             "TransmissionSpeeds", "Doors", "Seats", "PlantCity", "PlantState", "PlantCountry",
+             "RearVisibilitySystem", "BlindSpotMon", "AdaptiveCruiseControl", "ForwardCollisionWarning", "CIB",
+             "LaneDepartureWarning", "LaneKeepSystem", "RearCrossTrafficAlert", "KeylessIgnition", "ParkAssist"]
+FEATURES = [("RearVisibilitySystem", "Backup camera"), ("BlindSpotMon", "Blind spot"),
+            ("AdaptiveCruiseControl", "Adaptive cruise"), ("CIB", "Auto braking"),
+            ("ForwardCollisionWarning", "Collision warning"), ("LaneKeepSystem", "Lane keep"),
+            ("LaneDepartureWarning", "Lane departure"), ("RearCrossTrafficAlert", "Rear cross traffic"),
+            ("ParkAssist", "Park assist"), ("KeylessIgnition", "Push start")]
+
 def decode_vins(vins, cache):
-    need = [v for v in vins if v not in cache and vin_ok(v)]
+    need = [v for v in dict.fromkeys(vins)
+            if vin_ok(v) and (v not in cache or cache[v].get("_v") != VIN_CACHE_VERSION)]
     for i in range(0, len(need), 50):
         body = urllib.parse.urlencode({"format": "json", "data": ";".join(need[i:i + 50])}).encode()
         res = http("https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVINValuesBatch/", body)
         for d in res["Results"]:
-            keep = ["Make", "Model", "ModelYear", "Trim", "Series", "BodyClass", "DisplacementL",
-                    "EngineCylinders", "FuelTypePrimary", "ElectrificationLevel", "DriveType",
-                    "TransmissionStyle", "TransmissionSpeeds", "PlantCity", "PlantCountry"]
-            cache[d["VIN"]] = {k: d.get(k, "") for k in keep}
+            cache[d["VIN"]] = {**{k: d.get(k, "") for k in VPIC_KEEP}, "_v": VIN_CACHE_VERSION}
         time.sleep(1)
+    if need:
+        print(f"decoded {len(need)} VINs")
 
 def model_stats(make, model, year, cache):
     k = f"{make}|{model}|{year}"
@@ -233,6 +251,122 @@ def model_stats(make, model, year, cache):
                 "top": ", ".join(f"{a.lower()} {n}" for a, n in top)}
     return cache[k]
 
+# ---------- NCAP stars ----------
+
+def ncap(make, model, year, body, drive, cache):
+    k = f"{make}|{model}|{year}"
+    if k in cache and (dt.date.today() - dt.date.fromisoformat(cache[k]["at"])).days < 90:
+        return cache[k]
+    out = {"at": dt.date.today().isoformat()}
+    try:
+        path = "/".join(urllib.parse.quote(str(x)) for x in (year, "make", make, "model", model))
+        res = http(f"https://api.nhtsa.gov/SafetyRatings/modelyear/{path}").get("Results", [])
+        if res:
+            want = {"SUV": "SUV", "Pickup": "PU", "Minivan": "VAN", "Van": "VAN", "Sedan": "4 DR",
+                    "Coupe": "2 DR", "Convertible": "C", "Hatchback": "HB"}.get(body, "")
+            def score(r):
+                desc = r["VehicleDescription"].upper()
+                return 2 * bool(want and want in desc) + bool(drive and drive in desc)
+            pickr = max(res, key=score)
+            det = http(f'https://api.nhtsa.gov/SafetyRatings/VehicleId/{pickr["VehicleId"]}').get("Results", [{}])[0]
+            out.update(stars=det.get("OverallRating", ""), desc=pickr["VehicleDescription"])
+    except Exception as e:
+        print("  NCAP lookup failed", k, e)
+        return cache.get(k)
+    cache[k] = out
+    return out
+
+# ---------- stock photo (Wikimedia Commons) ----------
+
+PHOTO_BAD = re.compile(r"interior|engine|dash|cockpit|rear|back|badge|emblem|logo|wheel|rim\b|seat|trunk|boot|crash|"
+                       r"wreck|damag|tail ?light|head ?light|steering|odometer|gauge|instrument|console|detail|grille|"
+                       r"hood|mirror|police|taxi|\bcab\b|fire|ambulance|race|racing|rally|nascar|drift|modified|tuned|"
+                       r"custom|concept|prototype|interieur|innenraum|heck|\bmotor\b|cutaway|chassis|model car|toy|"
+                       r"lego|diecast|die.cast|scale|sketch|drawing", re.I)
+
+# US market photos look like the cars at a NYC auction; overseas versions of the same name can differ a lot
+US_CUES = re.compile(r"NHTSA|\b\d\d-\d\d-\d{4}\b|NYIAS|NYAS|New York|Washington|\bDC\b|Chicago|Detroit|NAIAS|LA Auto|"
+                     r"\bUS\b|USA|America|front (?:left|right)", re.I)
+NON_US = re.compile(r"Euro|JDM|\bcc\b|\d{3,4}cc|\(\d+ ?PS\)|TDCi|\bTDI\b|diesel|Indonesia|Jakarta|Japan|Thailand|Malaysia|"
+                    r"Philippines|India|China|Chinese|Sanming|Australia|\bUK\b|Taiwan|Korea|Brazil|Mexico|Russia|Europe|"
+                    r"Germany|France|Italy|Spain|Netherlands|Poland|Norway|Sweden|Automatic \d|Manual \d|SIAM|Bangkok|"
+                    r"Kuala|Manila|Tokyo|Beijing|Shanghai|Seoul|RHD", re.I)
+
+def commons_search(q):
+    p = {"action": "query", "format": "json", "generator": "search", "gsrnamespace": 6, "gsrlimit": 30,
+         "gsrsearch": q + " filetype:bitmap", "prop": "imageinfo", "iiprop": "url|extmetadata|size",
+         "iiurlwidth": 800, "iiextmetadatafilter": "Artist|LicenseShortName"}
+    req = urllib.request.Request("https://commons.wikimedia.org/w/api.php?" + urllib.parse.urlencode(p),
+                                 headers={"User-Agent": WIKI_UA})
+    for i in range(6):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return list(json.load(r).get("query", {}).get("pages", {}).values())
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                raise
+            time.sleep(int(e.headers.get("Retry-After") or 0) or 5 * (i + 1))
+    return []
+
+def word_rx(s):
+    parts = [re.escape(x) for x in re.split(r"[^A-Za-z0-9]+", s) if x]
+    return re.compile(r"(?<![a-z0-9])" + r"[\s\-_]?".join(parts) + r"(?![a-z0-9])", re.I) if parts else None
+
+def find_photo(year, make, model):
+    """Commons photo whose file name says this model year right before the make or model.
+    Titles like 'Honda Accord 2022-01-16' carry the photo date, not the model year, so they never match."""
+    mk = make.replace("-Benz", "")
+    md_rx = word_rx(model)
+    if not md_rx:
+        return None
+    lead = r"(?:%s|%s)" % (r"[\s\-_]?".join(map(re.escape, re.split(r"[^A-Za-z0-9]+", mk))),
+                           r"[\s\-_]?".join(map(re.escape, re.split(r"[^A-Za-z0-9]+", model))))
+    for y in (year, year - 1, year + 1, year - 2, year + 2):
+        yr = re.compile(rf"(?<![\d\-.])(?:(?:19|20)\d\d\s*[\-–]\s*{y}|{y}(?:\s*[\-–]\s*(?:19|20)?\d\d)?)"
+                        rf"(?![\d.])[\s_,]+(?:[A-Za-z\-]+[\s_]+)?{lead}", re.I)
+        best = None
+        for p in commons_search(f'"{y}" {make} {model}'):
+            t = p["title"][5:].rsplit(".", 1)[0]
+            if not yr.search(t) or not md_rx.search(t) or PHOTO_BAD.search(t):
+                continue
+            ii = p["imageinfo"][0]
+            if ii.get("width", 0) < ii.get("height", 1) * 1.15 or ii.get("width", 0) < 640:
+                continue
+            sc = (3 * bool(re.search(r"front|\bfr\b|3/4|three.quarter", t, re.I)) + 2 * bool(re.match(rf"\W*{y}", t))
+                  + 2 * bool(US_CUES.search(t)) - 4 * bool(NON_US.search(t)) - len(t) / 60)
+            if best is None or sc > best[0]:
+                m = ii.get("extmetadata", {})
+                by = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.get("Artist", {}).get("value", ""))).strip()
+                best = (sc, {"img": ii["thumburl"], "page": ii["descriptionurl"], "y": y, "by": by[:60],
+                             "lic": m.get("LicenseShortName", {}).get("value", ""), "t": t[:120]})
+        time.sleep(1)
+        if best:
+            return best[1]
+    return None
+
+def photos_for(combos, cache):
+    today = dt.date.today()
+    done = 0
+    for y, mk, md in combos:
+        k = f"{y}|{mk}|{md}"
+        hit = cache.get(k)
+        if hit and ("img" in hit or (today - dt.date.fromisoformat(hit["none"])).days < PHOTO_RETRY_DAYS):
+            continue
+        if done >= PHOTO_BUDGET:
+            break
+        done += 1
+        try:
+            ph = find_photo(y, mk, md)
+        except Exception as e:
+            print("  photo lookup failed", k, e)
+            continue
+        cache[k] = ph if ph else {"none": today.isoformat()}
+    if done:
+        found = sum(1 for y, mk, md in combos if "img" in cache.get(f"{y}|{mk}|{md}", {}))
+        print(f"photo lookups this run: {done}, models with a photo: {found}/{len(combos)}")
+
+# ---------- formatting ----------
+
 BODY = {"Sport Utility Vehicle (SUV)/Multipurpose Vehicle (MPV)": "SUV", "Crossover Utility Vehicle (CUV)": "SUV",
         "Sedan/Saloon": "Sedan", "Cargo Van": "Van", "Convertible/Cabriolet": "Convertible",
         "Hatchback/Liftback/Notchback": "Hatchback", "Sport Utility Truck (SUT)": "Pickup"}
@@ -250,25 +384,47 @@ def body_short(b):
 def engine(d):
     parts = []
     try:
-        if d["DisplacementL"]: parts.append(f'{float(d["DisplacementL"]):.1f}L')
+        if d.get("DisplacementL"): parts.append(f'{float(d["DisplacementL"]):.1f}L')
     except ValueError:
         pass
-    if d["EngineCylinders"]: parts.append(d["EngineCylinders"] + "cyl")
-    if d["FuelTypePrimary"] and d["FuelTypePrimary"] != "Gasoline": parts.append(d["FuelTypePrimary"])
-    el = d["ElectrificationLevel"]
+    if d.get("EngineCylinders"): parts.append(d["EngineCylinders"] + "cyl")
+    if d.get("Turbo") == "Yes": parts.append("Turbo")
+    if d.get("FuelTypePrimary") and d["FuelTypePrimary"] != "Gasoline": parts.append(d["FuelTypePrimary"])
+    el = d.get("ElectrificationLevel", "")
     if "Strong HEV" in el: parts.append("Hybrid")
     elif "PHEV" in el: parts.append("Plug in hybrid")
     elif "BEV" in el and "Electric" not in parts: parts.append("Electric")
     return " ".join(parts)
+
+def trans(d):
+    t = d.get("TransmissionStyle", "")
+    t = re.sub(r"\s*\(.*?\)", "", t).replace("Continuously Variable", "CVT").replace("Electronic CVT", "eCVT")
+    sp = d.get("TransmissionSpeeds", "")
+    return f"{sp} speed {t.lower()}".strip() if sp and t else t
+
+def hp(d):
+    try:
+        return int(float(d.get("EngineHP") or 0)) or None
+    except ValueError:
+        return None
 
 def tidy(s):
     s = s.title() if s and s.isupper() else s
     return re.sub(r"\b(Llc|Inc|Na|Fcu|Usa|Bmw|Vw|Gm|Cps|Td|Hvt|Esl|Teg|Gfa|Jsac|Ccap|Fin|Svcs)\b",
                   lambda m: m.group(0).upper(), s or "")
 
+def plant(d):
+    c = d.get("PlantCountry", "")
+    c = re.sub(r"\s*\(.*?\)", "", c).title().replace("Of", "of")
+    city = d.get("PlantCity", "").title()
+    return ", ".join(x for x in (city, c) if x)
+
 # ---------- build ----------
 
-def build_car(r, vc, mc):
+def make_name(mk):
+    return mk if mk in ("BMW", "GMC", "KIA", "RAM", "MINI") else mk.title()
+
+def build_car(r, vc, mc, pc, nc):
     v = r["vin"]
     car = {"n": r["n"], "listYear": r["year"], "listMake": r["make"], "plate": f'{r["plate"]} {r["st"]}'.strip(),
            "vin": v, "lien": tidy(r["lien"]), "flags": []}
@@ -278,34 +434,46 @@ def build_car(r, vc, mc):
         return car
     d = vc.get(v) or {}
     mk = d.get("Make", "")
-    car.update(year=int(d["ModelYear"]) if d.get("ModelYear", "").isdigit() else r["year"],
-               make=mk if mk in ("BMW", "GMC", "KIA", "RAM", "MINI") else mk.title(),
-               model=d.get("Model", ""), trim=" ".join(x for x in [d.get("Trim", ""), d.get("Series", "")] if x),
-               body=body_short(d.get("BodyClass", "")), engine=engine(d) if d else "",
-               drive=DRIVE.get(d.get("DriveType", ""), d.get("DriveType", "")))
+    year = int(d["ModelYear"]) if d.get("ModelYear", "").isdigit() else r["year"]
+    car.update(year=year, make=make_name(mk), model=d.get("Model", ""),
+               trim=" ".join(x for x in [d.get("Trim", ""), d.get("Series", "")] if x),
+               body=body_short(d.get("BodyClass", "")), engine=engine(d), hp=hp(d),
+               drive=DRIVE.get(d.get("DriveType", ""), d.get("DriveType", "")), trans=trans(d),
+               seats=d.get("Seats", ""), plant=plant(d),
+               features=[lab for f, lab in FEATURES if d.get(f) == "Standard"])
     if d.get("ModelYear", "").isdigit() and int(d["ModelYear"]) != r["year"]:
         car["flags"].append(f'City list says {r["year"]}, VIN says {d["ModelYear"]}')
     if mk and d.get("Model") and d.get("ModelYear"):
         s = model_stats(mk, d["Model"], d["ModelYear"], mc)
         if s:
             car.update(recalls=s["rc"], complaints=s["c"], crashFire=f'{s["crash"]}/{s["fire"]}', topComplaints=s["top"])
+        st = nc.get(f'{mk}|{d["Model"]}|{d["ModelYear"]}')
+        if st and st.get("stars") and st["stars"].isdigit():
+            car["stars"] = int(st["stars"]); car["starsFor"] = st["desc"]
+        ph = pc.get(f'{year}|{car["make"]}|{car["model"]}')
+        if ph and "img" in ph:
+            car["photo"] = ph
+    car = {k: v for k, v in car.items() if v not in ("", None, [])}
+    car.setdefault("lien", ""); car.setdefault("flags", [])
     return car
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--pdf"); ap.add_argument("--id")
+    ap.add_argument("--no-photos", action="store_true")
     a = ap.parse_args()
 
-    store = load(OUT, {"auctions": []})
-    by_id = {x["id"]: x for x in store["auctions"]}
+    raw = load(RAW, {})
     vc, mc = load(VIN_CACHE, {}), load(MODEL_CACHE, {})
+    pc, nc = load(PHOTO_CACHE, {}), load(NCAP_CACHE, {})
     today = dt.date.today()
+    cutoff = (today - dt.timedelta(days=KEEP_PAST_DAYS)).isoformat()
 
     sources = [(a.id, None)] if a.pdf else list_pdfs()
     print(f"{len(sources)} auction PDFs on the city page")
     for aid, url in sources:
-        if date_from_id(aid) and date_from_id(aid) < (today - dt.timedelta(days=KEEP_PAST_DAYS)).isoformat():
+        if date_from_id(aid) and date_from_id(aid) < cutoff:
             continue
         try:
             blob = Path(a.pdf).read_bytes() if a.pdf else http(url, binary=True)
@@ -313,9 +481,7 @@ def main():
             print(f"  {aid}: download failed, keeping previous data ({e})")
             continue
         h = hashlib.sha256(blob).hexdigest()[:16]
-        old = by_id.get(aid)
-        if old and old.get("hash") == h and not a.force:
-            print(f"  {aid}: unchanged")
+        if aid in raw and raw[aid].get("hash") == h and not a.force:
             continue
         try:
             rows, meta = parse_pdf(blob)
@@ -325,19 +491,33 @@ def main():
         if not rows:
             print(f"  {aid}: no vehicle rows found, skipped")
             continue
-        decode_vins([r["vin"] for r in rows], vc)
-        cars = [build_car(r, vc, mc) for r in rows]
-        bad = sum(1 for c in cars if not vin_ok(c["vin"]))
-        by_id[aid] = {"id": aid, "borough": borough_of(aid), "date": meta.get("date") or date_from_id(aid),
-                      "time": meta.get("time", ""), "location": meta.get("location", ""), "pdf": url or "",
-                      "hash": h, "fetched": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
-                      "cars": cars}
-        print(f"  {aid}: {len(cars)} lots, {bad} without a valid VIN, {meta}")
+        raw[aid] = {"id": aid, "borough": borough_of(aid), "date": meta.get("date") or date_from_id(aid),
+                    "time": meta.get("time", ""), "location": meta.get("location", ""), "pdf": url or "",
+                    "hash": h, "fetched": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"), "rows": rows}
+        print(f"  {aid}: {len(rows)} lots, {sum(1 for r in rows if not vin_ok(r['vin']))} without a valid VIN, {meta}")
 
-    cutoff = (today - dt.timedelta(days=KEEP_PAST_DAYS)).isoformat()
-    auctions = sorted((x for x in by_id.values() if (x.get("date") or "9999") >= cutoff),
-                      key=lambda x: (x.get("date") or "", x["borough"]))
-    # cars that come back on another list
+    raw = {k: x for k, x in raw.items() if (x.get("date") or "9999") >= cutoff}
+    order = sorted(raw.values(), key=lambda x: (x["borough"] != "Bronx", x["date"] < today.isoformat(), x["date"]))
+    decode_vins([r["vin"] for x in order for r in x["rows"]], vc)
+
+    combos = []
+    for x in order:
+        for r in x["rows"]:
+            d = vc.get(r["vin"])
+            if d and d.get("Make") and d.get("Model") and d.get("ModelYear", "").isdigit():
+                combos.append((d["Make"], d["Model"], d["ModelYear"], body_short(d.get("BodyClass", "")),
+                               DRIVE.get(d.get("DriveType", ""), "")))
+    combos = list(dict.fromkeys(combos))
+    for mk, md, y, b, dr in combos:
+        model_stats(mk, md, y, mc)
+        ncap(mk, md, y, b, dr, nc)
+    if not a.no_photos:
+        photos_for(list(dict.fromkeys((int(y), make_name(mk), md) for mk, md, y, b, dr in combos)), pc)
+
+    auctions = []
+    for x in sorted(raw.values(), key=lambda x: (x["date"], x["borough"])):
+        meta = {k: v for k, v in x.items() if k not in ("rows", "hash")}
+        auctions.append({**meta, "cars": [build_car(r, vc, mc, pc, nc) for r in x["rows"]]})
     seen = {}
     for x in auctions:
         for c in x["cars"]:
@@ -345,17 +525,16 @@ def main():
                 seen.setdefault(c["vin"], []).append((x["date"], x["borough"], c["n"]))
     for x in auctions:
         for c in x["cars"]:
-            c["flags"] = [f for f in c["flags"] if not f.startswith("Also on")]
             other = [o for o in seen.get(c["vin"], []) if (o[0], o[1]) != (x["date"], x["borough"])]
             if other:
                 c["flags"].append("Also on " + ", ".join(
                     f'{dt.date.fromisoformat(d).strftime("%-m/%-d")} {b} lot {n}' for d, b, n in other))
+
     DATA.mkdir(exist_ok=True)
-    OUT.write_text(json.dumps({"updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
-                               "auctions": auctions}, separators=(",", ":")))
-    VIN_CACHE.write_text(json.dumps(vc, separators=(",", ":"), sort_keys=True))
-    MODEL_CACHE.write_text(json.dumps(mc, separators=(",", ":"), sort_keys=True))
-    print(f"wrote {len(auctions)} auctions")
+    def dump(p, obj): p.write_text(json.dumps(obj, separators=(",", ":"), sort_keys=p != OUT))
+    dump(OUT, {"updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"), "auctions": auctions})
+    dump(RAW, raw); dump(VIN_CACHE, vc); dump(MODEL_CACHE, mc); dump(PHOTO_CACHE, pc); dump(NCAP_CACHE, nc)
+    print(f"wrote {len(auctions)} auctions, {sum(len(x['cars']) for x in auctions)} lots")
 
 if __name__ == "__main__":
     sys.exit(main())

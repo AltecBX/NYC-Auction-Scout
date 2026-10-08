@@ -7,7 +7,14 @@ Jerry's site for NYC Department of Finance (City Sheriff) vehicle auctions. He u
 - Output: `data/auctions.json`. Caches: `data/vin_cache.json`, `data/model_cache.json` (model stats refresh after 30 days). Auctions older than 14 days drop off.
 - A PDF is re-parsed only when its sha256 changes, or with `--force`.
 - `.github/workflows/update.yml` runs it at 6:07am and 6:07pm New York and commits `data/`. Manual run: Actions tab, "Update auction lists", Run workflow.
-- `index.html` is the whole site: static, no build step, served by GitHub Pages from `main` root. Reads `data/auctions.json`. Stars and notes live in localStorage.
+- Site: `index.html` + `styles.css` + `app.js`, static, no build step, served by GitHub Pages from `main` root. Reads `data/auctions.json`. Stars and notes live in localStorage. `manifest.webmanifest` lets Jerry add it to his iPhone home screen.
+- Raw parsed rows live in `data/raw.json`; cars are rebuilt from caches on every run, so new photos and stats show up without re-reading PDFs.
+- Stock photos: Wikimedia Commons file whose title has the model year right before the make or model (titles ending in a photo date do not count). Falls back up to 2 years and the card says so. US market photos are preferred. Credit line (author, license) is shown under Details, keep it. `PHOTO_BUDGET` caps new lookups per run.
+- NHTSA crash stars come from api.nhtsa.gov/SafetyRatings, best variant match by body and drive. Standard safety equipment comes from the vPIC decode.
+
+## Design
+- Brand: Jerry's 3D logo kit in `assets/` (chrome and enamel blue #1f5fbf, light blue #6ea2f0). Header is always dark asphalt so the chrome logo reads. Lot numbers are grease marker yellow #ffd23f, tilted. Font: Saira Semi Condensed.
+- Light and dark follow the phone setting.
 
 ## Known data quirks
 - NHTSA recall and complaint endpoints return HTTP 400 with a valid JSON body when there are 0 results. `http()` handles it.
