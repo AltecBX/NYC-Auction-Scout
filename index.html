@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>NYC Auction Scout</title>
+<meta name="description" content="NYC Finance vehicle auction lists with decoded VINs, lien flags and NHTSA recall data.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: yard clipboard. Sticky filter bar, one card per lot, lot number as the anchor */
+:root{
+  --bg:#eef0f2;--card:#ffffff;--fg:#16191d;--muted:#5d6670;--line:#d6dbe0;
+  --accent:#1f5fbf;--accent-ink:#ffffff;--lien:#b3261e;--lien-bg:#fbe9e7;--clear:#1d6b3a;--clear-bg:#e5f3ea;
+  --warn:#8a5a00;--warn-bg:#fdf1d8;--chip:#e4e8ec;
+  --f-ui:"IBM Plex Sans Condensed","Arial Narrow",Arial,sans-serif;--f-mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#111417;--card:#1a1e23;--fg:#e8ebee;--muted:#9aa4ae;--line:#2c333a;
+  --accent:#6ea2f0;--accent-ink:#0d1520;--lien:#ff8a80;--lien-bg:#3a1d1b;--clear:#7fd39b;--clear-bg:#173023;
+  --warn:#f1c46b;--warn-bg:#352a12;--chip:#252b31;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--f-ui);font-size:15px;line-height:1.35;-webkit-text-size-adjust:100%}
+.wrap{max-width:980px;margin:0 auto;padding-inline:16px;padding-block:calc(14px + env(safe-area-inset-top,0px)) calc(40px + env(safe-area-inset-bottom,0px))}
+h1{font-size:1.5rem;font-weight:700;margin:0;text-wrap:balance}
+.sub{color:var(--muted);margin-top:2px}
+.sub a{color:var(--accent)}
+.row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.rules{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 4px}
+.rules span{background:var(--chip);border-radius:4px;padding:3px 8px;font-size:.85rem}
+.rules .r{background:var(--lien-bg);color:var(--lien);font-weight:600}
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);padding-block:10px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--line)}
+input[type=search],select{font:inherit;font-size:16px;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:7px 10px}
+input[type=search]{flex:1 1 180px;min-width:0}
+.pill{font:inherit;font-size:.88rem;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:999px;padding:6px 11px;cursor:pointer}
+.pill[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.pill.past{opacity:.6}
+.pill:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.count{color:var(--muted);font-size:.88rem;font-variant-numeric:tabular-nums}
+.list{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;margin-top:12px}
+.car{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.car.lien{border-color:var(--lien)}
+.top{display:flex;gap:10px;align-items:flex-start}
+.lot{font-family:var(--f-mono);font-weight:500;font-size:1.35rem;min-width:2.4ch;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+.name{font-weight:700;font-size:1.08rem;line-height:1.2}
+.trim{color:var(--muted);font-size:.88rem}
+.star{margin-left:auto;font:inherit;font-size:1.3rem;background:none;border:0;color:var(--muted);cursor:pointer;padding:0 4px;min-width:36px;min-height:36px}
+.star[aria-pressed="true"]{color:var(--warn)}
+.specs{display:flex;flex-wrap:wrap;gap:4px}
+.specs span{background:var(--chip);border-radius:4px;padding:2px 7px;font-size:.84rem}
+.flag{font-size:.84rem;background:var(--warn-bg);color:var(--warn);border-radius:4px;padding:5px 8px}
+.status{font-size:.86rem;border-radius:4px;padding:5px 8px}
+.status.l{background:var(--lien-bg);color:var(--lien)}
+.status.c{background:var(--clear-bg);color:var(--clear)}
+.nh{font-size:.84rem;color:var(--muted)}
+.nh b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
+.vin{font-family:var(--f-mono);font-size:.82rem;color:var(--muted);word-break:break-all}
+.links{display:flex;flex-wrap:wrap;gap:6px}
+.links a{font-size:.88rem;color:var(--accent);text-decoration:none;border:1px solid var(--line);border-radius:5px;padding:6px 10px}
+.bid{display:flex;gap:6px;align-items:center;font-size:.85rem;color:var(--muted)}
+.bid input{font:inherit;font-size:16px;width:100%;min-width:0;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:5px 8px}
+.empty{padding:24px 4px;color:var(--muted)}
+.foot{margin-top:18px;color:var(--muted);font-size:.84rem;max-width:68ch}
+.foot p{margin:6px 0}
+.foot a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="h1">NYC Vehicle Auction</h1>
+  <div class="sub" id="sub">Loading auction lists</div>
+  <div class="row" id="boro" style="margin-top:10px"></div>
+  <div class="row" id="auc" style="margin-top:6px"></div>
+  <div class="rules">
+    <span>Cash only, paid at the winning bid</span><span>No keys</span><span>As is, no warranty</span>
+    <span class="r">Liens stay with the car, lienholder can repossess</span><span>Remove by 5:00pm or $20/day</span>
+  </div>
+  <div class="bar">
+    <div class="row">
+      <input type="search" id="q" placeholder="Search make, model, lot #, VIN" aria-label="Search">
+      <select id="sort" aria-label="Sort">
+        <option value="n">Lot #</option><option value="y">Newest first</option>
+        <option value="c">Fewest complaints</option><option value="r">Fewest recalls</option>
+      </select>
+    </div>
+    <div class="row" id="lienf"></div>
+    <div class="row" id="bodyf"></div>
+    <div class="count" id="count"></div>
+  </div>
+  <div class="list" id="list"></div>
+  <div class="foot">
+    <p>Lists come from the <a href="https://www.nyc.gov/site/finance/vehicles/auctions.page" target="_blank" rel="noopener">NYC Finance auctions page</a> and refresh every morning. <span id="upd"></span></p>
+    <p>Year, make, model, trim, engine, drive and body come from the NHTSA VIN decoder. A VIN that fails its check digit is flagged. When the city's year and the VIN disagree, the card shows the VIN year and says so.</p>
+    <p>Recall and complaint counts are for the whole model year, not this car. Bigger sellers draw more complaints, so compare within similar cars. Whether this car's recalls were done shows on the Recalls link.</p>
+    <p>Mileage, color, accidents and title brands are not in the VIN. History searches the VIN, which often turns up old Copart or IAA listings with photos and odometer. NICB is free for theft and insurance total loss, a few lookups a day.</p>
+    <p>Stars and notes save on this device only.</p>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const pad=n=>String(n).padStart(2,'0');
+const now=new Date();const td=now.getFullYear()+'-'+pad(now.getMonth()+1)+'-'+pad(now.getDate());
+const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+function label(iso){const[y,m,d]=iso.split('-').map(Number);const dt=new Date(y,m-1,d);return DOW[dt.getDay()]+' '+m+'/'+d}
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v)}catch(e){return d}}
+function put(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+
+let DATA={auctions:[]};
+const st={q:'',sort:'n',lien:'all',body:'all',boro:get('boro','Bronx'),auc:null};
+let saved=get('notes',{});
+const sv=n=>saved[st.auc+'-'+n]||(saved[st.auc+'-'+n]={});
+
+function pills(el,opts,cur,onPick){el.innerHTML='';opts.forEach(([v,text,cls])=>{const b=document.createElement('button');
+  b.className='pill'+(cls?' '+cls:'');b.type='button';b.textContent=text;b.setAttribute('aria-pressed',cur===v);b.onclick=()=>onPick(v);el.appendChild(b)})}
+
+function render(){
+  const boros=[...new Set(DATA.auctions.map(a=>a.borough))].sort();
+  if(!boros.includes(st.boro))st.boro=boros.includes('Bronx')?'Bronx':boros[0];
+  pills($('boro'),boros.map(b=>[b,b]),st.boro,v=>{st.boro=v;st.auc=null;st.lien='all';st.body='all';put('boro',v);render()});
+  const list=DATA.auctions.filter(a=>a.borough===st.boro);
+  if(!list.length){$('list').innerHTML='<div class="empty">No auction lists posted yet.</div>';return}
+  if(!st.auc||!list.some(a=>a.id===st.auc))st.auc=(list.find(a=>a.date>=td)||list[list.length-1]).id;
+  pills($('auc'),list.map(a=>[a.id,label(a.date)+(a.date<td?' (past)':''),a.date<td?'past':'']),st.auc,v=>{st.auc=v;st.lien='all';st.body='all';render()});
+  const A=list.find(a=>a.id===st.auc),CARS=A.cars;
+  $('h1').textContent=A.borough+' Vehicle Auction, '+label(A.date)+(A.time?' at '+A.time:'');
+  const loc=A.location||'';
+  $('sub').innerHTML=(loc?esc(loc)+'. <a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(loc)+'">Directions</a>. ':'')+
+    CARS.length+' lots. '+(A.pdf?'<a target="_blank" rel="noopener" href="'+esc(A.pdf)+'">City list</a>':'');
+  const nl=CARS.filter(c=>!c.lien).length,stars=CARS.filter(c=>(saved[st.auc+'-'+c.n]||{}).s).length;
+  pills($('lienf'),[['all','All '+CARS.length],['clear','No lien '+nl],['lien','Lien '+(CARS.length-nl)],['star','Starred '+stars]],st.lien,v=>{st.lien=v;render()});
+  const bodies=[...new Set(CARS.map(c=>c.body).filter(Boolean))].sort();
+  pills($('bodyf'),[['all','All bodies'],...bodies.map(b=>[b,b])],st.body,v=>{st.body=v;render()});
+  const q=st.q.toLowerCase().trim();
+  const r=CARS.filter(c=>{
+    if(st.lien==='clear'&&c.lien)return false;if(st.lien==='lien'&&!c.lien)return false;
+    if(st.lien==='star'&&!(saved[st.auc+'-'+c.n]||{}).s)return false;
+    if(st.body!=='all'&&c.body!==st.body)return false;
+    if(q&&![c.n,c.year,c.make,c.model,c.trim,c.vin,c.plate,c.listMake].join(' ').toLowerCase().includes(q))return false;return true});
+  const big=x=>x??1e9;
+  r.sort({n:(a,b)=>a.n-b.n,y:(a,b)=>(b.year||0)-(a.year||0)||a.n-b.n,c:(a,b)=>big(a.complaints)-big(b.complaints)||a.n-b.n,r:(a,b)=>big(a.recalls)-big(b.recalls)||a.n-b.n}[st.sort]);
+  $('count').textContent=r.length+' of '+CARS.length+' lots shown';
+  $('list').innerHTML=r.length?r.map(card).join(''):'<div class="empty">No lots match.</div>';
+}
+function card(c){
+  const s=saved[st.auc+'-'+c.n]||{},yr=c.year||c.listYear,ok=c.vin&&c.vin.length===17&&c.model;
+  const name=c.model?`${c.year} ${esc(c.make)} ${esc(c.model)}`:`${esc(c.listYear||'')} ${esc(c.listMake||'Unknown vehicle')}`;
+  return `<article class="car${c.lien?' lien':''}">
+    <div class="top"><div class="lot">${c.n}</div>
+      <div style="min-width:0"><div class="name">${name}</div>${c.trim?`<div class="trim">${esc(c.trim)}</div>`:''}</div>
+      <button class="star" type="button" data-n="${c.n}" aria-pressed="${!!s.s}" aria-label="Star lot ${c.n}">${s.s?'★':'☆'}</button></div>
+    <div class="specs">${[c.body,c.engine,c.drive,yr?(now.getFullYear()-yr)+' yrs old':'','Plate '+c.plate].filter(Boolean).map(x=>`<span>${esc(x)}</span>`).join('')}</div>
+    ${(c.flags||[]).map(x=>`<div class="flag">${esc(x)}</div>`).join('')}
+    <div class="status ${c.lien?'l':'c'}">${c.lien?'Lien: '+esc(c.lien):'No lienholder listed'}</div>
+    ${c.recalls==null?'':`<div class="nh">Model year: <b>${c.recalls}</b> recalls, <b>${c.complaints}</b> complaints, crash/fire <b>${esc(c.crashFire)}</b>${c.topComplaints?`<br>Most complaints: ${esc(c.topComplaints)}`:''}</div>`}
+    <div class="vin">${esc(c.vin)}</div>
+    ${ok?`<div class="links">
+      <a href="https://www.google.com/search?q=%22${c.vin}%22" target="_blank" rel="noopener">History</a>
+      <a href="https://www.nhtsa.gov/recalls?vin=${c.vin}" target="_blank" rel="noopener">Recalls</a>
+      <a href="https://www.nicb.org/vincheck" target="_blank" rel="noopener">NICB</a></div>`:''}
+    <label class="bid">Notes<input id="note-${esc(st.auc)}-${c.n}" data-n="${c.n}" value="${esc(s.t||'')}" placeholder="max bid, condition"></label>
+  </article>`}
+
+$('q').oninput=e=>{st.q=e.target.value;render()};
+$('sort').onchange=e=>{st.sort=e.target.value;render()};
+$('list').addEventListener('click',e=>{const b=e.target.closest('.star');if(!b)return;const o=sv(b.dataset.n);o.s=!o.s;put('notes',saved);render()});
+$('list').addEventListener('change',e=>{if(!e.target.matches('.bid input'))return;sv(e.target.dataset.n).t=e.target.value;put('notes',saved)});
+
+fetch('data/auctions.json?t='+Date.now(),{cache:'no-store'}).then(r=>r.json()).then(d=>{
+  DATA=d;DATA.auctions.sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+  if(d.updated)$('upd').textContent='Last checked '+new Date(d.updated).toLocaleString([], {month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'})+'.';
+  render();
+}).catch(()=>{$('sub').textContent='Could not load the auction lists. Pull to refresh.'});
+</script>
+</body>
+</html>
