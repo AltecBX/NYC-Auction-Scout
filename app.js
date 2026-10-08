@@ -134,7 +134,7 @@ function card({ a, c }) {
   const ph = c.photo;
   const shot = ph
     ? `<img src="${esc(ph.img)}" alt="Stock photo of a ${esc(c.make)} ${esc(c.model)}" loading="lazy" decoding="async">
-       <div class="cap">${ph.k === "model" || !ph.y ? "Stock photo of this model, year may differ" : ph.y === c.year ? "Stock photo" : `Stock photo of a ${ph.y}, closest year found`}</div>`
+       <div class="cap">${!ph.y ? "Stock photo of this model, year may differ" : ph.y === c.year ? "Stock photo" : `Stock photo of a ${ph.y}, closest year found`}</div>`
     : `<div class="nophoto"><img src="assets/emblem-128.webp" alt=""><span>No stock photo yet</span></div>`;
   const specs = [c.body, c.engine, c.drive, yr ? `${now.getFullYear() - yr} yrs old` : ""].filter(Boolean);
   const safety = c.recalls == null ? "" : `<div class="safety">

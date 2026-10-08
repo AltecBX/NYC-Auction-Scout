@@ -537,7 +537,9 @@ def wiki_lead_photo(make, model):
         ii = ip[0]["imageinfo"][0]
         if ii.get("width", 0) < ii.get("height", 1):
             continue
-        return photo_entry(ii, None, name.rsplit(".", 1)[0].replace("_", " "), "model")
+        t = name.rsplit(".", 1)[0].replace("_", " ")
+        m = re.match(r"\W*((?:19|20)\d\d)\b(?!-\d\d-)", t)
+        return photo_entry(ii, int(m.group(1)) if m else None, t, "model")
     return None
 
 def photo_still_good(hit, mk, md):
