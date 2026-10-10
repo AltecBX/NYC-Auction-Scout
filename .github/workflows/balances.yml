@@ -1,0 +1,38 @@
+name: Update lien balance estimates
+
+# Typical balances on public auto loans (SEC loan level filings), read by scripts/update.py for lien cards.
+# Needs the repository secret SEC_CONTACT (an email the SEC can reach). Without it the run skips and keeps the last file.
+on:
+  schedule:
+    - cron: "41 14 26 * *"   # 26th of each month, 10:41am New York, after the trusts file their monthly reports
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  balances:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Read SEC loan data
+        env:
+          SEC_CONTACT: ${{ secrets.SEC_CONTACT }}
+        run: python scripts/balances.py
+      - name: Commit changes
+        run: |
+          git config user.name "auction-bot"
+          git config user.email "auction-bot@users.noreply.github.com"
+          git add data/balance_stats.json
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Update lien balance estimates"
+          for i in 1 2 3; do git pull --rebase -X theirs origin main && git push && exit 0; sleep 5; done
+          exit 1
