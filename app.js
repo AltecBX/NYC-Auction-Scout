@@ -110,6 +110,8 @@ function renderChips(P) {
   add("No lien", P.filter(x => !x.c.lien).length, st.filter === "clear", () => { st.filter = st.filter === "clear" ? "all" : "clear"; render(); });
   if (st.view === "sale") add("Starred", P.filter(x => isFav(x.a, x.c)).length, st.filter === "star", () => { st.filter = st.filter === "star" ? "all" : "star"; render(); });
   add("Has lien", P.filter(x => x.c.lien).length, st.filter === "lien", () => { st.filter = st.filter === "lien" ? "all" : "lien"; render(); });
+  const nl = P.filter(x => !isLease(x.c)).length;
+  if (nl < P.length) add("No lease", nl, st.filter === "nolease", () => { st.filter = st.filter === "nolease" ? "all" : "nolease"; render(); });
   const nh = P.filter(x => hasHist(x.c)).length;
   if (nh) add("History found", nh, st.filter === "hist", () => { st.filter = st.filter === "hist" ? "all" : "hist"; render(); });
   if (st.view !== "sale") {
@@ -193,18 +195,59 @@ function histHTML(c) {
     ${manual}</div></details>`;
 }
 
+// Value sense. No free source allows automatic market values (KBB's terms forbid automated lookups), so the card
+// estimates mileage the way Jerry does (10,000 to 20,000 a year, or from a dated reading in Vehicle history) and
+// links KBB with that mileage filled in. Base price is the maker's price when new, from the VIN decode, when present.
+const round1k = n => Math.round(n / 1000) * 1000;
+const fmtN = n => n.toLocaleString("en-US");
+function milesEst(c) {
+  const ev = ((c.history || {}).ev || []).filter(e => e.miles > 0);
+  const dated = ev.filter(e => (e.dates || []).length)
+    .map(e => ({ miles: e.miles, date: e.dates[e.dates.length - 1] })).sort((p, q) => (p.date < q.date ? 1 : -1))[0];
+  if (dated) {
+    const yrs = Math.max(0, (now - parse(dated.date)) / 3.156e10);
+    return { lo: round1k(dated.miles + yrs * 10000), hi: round1k(dated.miles + yrs * 20000),
+      why: `${fmtN(dated.miles)} recorded ${fmtD(dated.date)}, plus 10,000 to 20,000 a year since` };
+  }
+  const yr = c.year || c.listYear;
+  if (!yr) return null;
+  const age = Math.max(1, now.getFullYear() - yr), seen = Math.max(0, ...ev.map(e => e.miles));
+  return { lo: Math.max(age * 10000, seen), hi: Math.max(age * 20000, seen),
+    why: `${plural(age, "year")} at 10,000 to 20,000 a year${seen > age * 10000 ? `, and at least the ${fmtN(seen)} on a past listing` : ""}` };
+}
+const kbbSlug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+function kbbURL(c, miles) {
+  if (!c.model || !c.year) return null;
+  let m = c.model.toLowerCase();
+  if (c.make === "BMW" && /^\d\d\d/.test(m)) m = m[0] + " series";                        // 330i is the 3 Series
+  m = m.replace(/^([a-z]{2,})-class$/, "$1").replace(/^f-(\d{3})$/, "f$1");                  // GLE-Class is gle, F-150 is f150
+  if (/^(silverado|sierra)$/.test(m) && /1500/.test(c.trim || "")) m += " 1500";
+  return `https://www.kbb.com/${kbbSlug(c.make)}/${kbbSlug(m)}/${c.year}/styles/?intent=trade-in-sell&mileage=${miles}`;
+}
+function valueHTML(c) {
+  const m = c.model && milesEst(c);
+  if (!m) return "";
+  const mid = round1k((m.lo + m.hi) / 2), url = kbbURL(c, mid);
+  return `<div class="valbox">
+    <div class="vr"><span class="k">Miles, estimate</span><b>${m.lo === m.hi ? `At least ${fmtN(m.lo)}` : `${fmtN(m.lo)} to ${fmtN(m.hi)}`}</b><span class="why">${esc(m.why)}</span></div>
+    ${c.basePrice ? `<div class="vr"><span class="k">Base price new</span><b>${usd(c.basePrice)}</b><span class="why">Maker's price before options, from the VIN decode. Not today's value.</span></div>` : ""}
+    ${url ? `<a class="kbb" href="${esc(url)}" target="_blank" rel="noopener">KBB value at ${fmtN(mid)} miles</a>` : ""}
+  </div>`;
+}
+
 // Lien heads up. The payoff is private, so the card explains the risk and does the underwater math with Jerry's numbers.
 // Lease names checked Oct 2026: Toyota Lease Trust, Honda Lease Trust and its trustee HVT Inc, Hyundai Lease Titling
 // Trust, Nissan Infiniti LT, VW Credit Leasing, Ford Credit's CAB East, CAB West and HTD Leasing, Chrysler Capital's
 // CCAP Auto Lease. Each is the owner of record of a leased car, not a lender.
 const LIEN_KIND = [
   [/\bLEASE\b|\bLEASING\b|TITLING TRUST|\bHVT\b|\bCAB (?:EAST|WEST)\b|NISSAN.?INFINITI LT/i, "Lease company",
-   "A leased car is owned by the leasing company, not by the person it was seized from. Treat it as likely to be taken back."],
+   "A leased car is owned by the leasing company, not by the person it was seized from. Treat it as likely to be taken back. Its payoff is the lease buyout: the remaining payments plus the residual value set when the lease was signed."],
   [/TITLE ?LOANS?\b|TITLEMAX/i, "Title loan", "A title loan company holds this lien. The loan is secured by this car's title."],
   [/AUTO SALES|MOTOR CARS|AUTO GROUP|AUTO MALL|CHRYSLER LLC|\bMOTORS? (?:INC|LLC)\b/i, "Dealer loan",
    "A car dealer holds this lien, so the dealer itself financed the car."],
 ];
 const lienKind = name => LIEN_KIND.find(([rx]) => rx.test((name || "").split("/")[0]));   // the first name is the main lienholder
+const isLease = c => !!c.lien && (lienKind(c.lien) || [])[1] === "Lease company";
 const money = s => {
   const m = String(s || "").replace(/[$,\s]/g, "").match(/^(\d+(?:\.\d+)?)(k)?$/i);
   return m ? Math.round(parseFloat(m[1]) * (m[2] ? 1000 : 1)) : null;
@@ -224,6 +267,7 @@ function lienHTML(a, c) {
   const k = lienKind(c.lien), o = saved[keyOf(a.id, c.n)] || {};
   const fld = (f, label, ph) => `<label><span>${label}</span><input inputmode="decimal" autocomplete="off" data-f="${f}" data-a="${esc(a.id)}" data-n="${c.n}" value="${esc(o[f] || "")}" placeholder="${ph}"></label>`;
   const q = encodeURIComponent([c.year || c.listYear, c.make || c.listMake, c.model, c.trim, "value"].filter(Boolean).join(" "));
+  const est = c.model && milesEst(c), kbb = est && kbbURL(c, round1k((est.lo + est.hi) / 2));
   return `<details class="lienx"><summary class="lienbar l">${ICON.lock}<span>Lien held by <b>${esc(c.lien)}</b>${k ? ` <em>${k[1]}</em>` : ""}</span></summary>
     <div class="lienin">
       ${k ? `<p class="lk">${esc(k[2])}</p>` : ""}
@@ -232,7 +276,7 @@ function lienHTML(a, c) {
       <div class="calc"><div class="k">Underwater check, your numbers</div>
         <div class="row">${fld("v", "Car value", "$")}${fld("b", "Your bid", "$")}${fld("x", "Other costs", "Reg, key")}</div>
         <p class="out">${esc(lienMath(o))}</p>
-        <a class="val" href="https://www.google.com/search?q=${q}" target="_blank" rel="noopener">Look up value</a>
+        <a class="val" href="${esc(kbb || `https://www.google.com/search?q=${q}`)}" target="_blank" rel="noopener">${kbb ? "KBB value" : "Look up value"}</a>
       </div>
     </div></details>`;
 }
@@ -277,6 +321,7 @@ function card({ a, c }) {
       <div class="title-row"><h2 class="title">${name}</h2>${c.trim ? `<div class="trim">${esc(c.trim)}</div>` : ""}</div>
       ${specs.length ? `<div class="specs">${specs.map(x => `<span>${esc(x)}</span>`).join("")}</div>` : ""}
       ${(c.flags || []).map(f => `<div class="flag">${esc(f)}</div>`).join("")}
+      ${valueHTML(c)}
       ${lienHTML(a, c)}
       ${safety}
       ${feats.length ? `<div class="feats">${feats.map(f => `<span>${esc(f)}</span>`).join("")}</div>` : ""}
@@ -302,6 +347,7 @@ function render(scrollTop) {
     if (st.filter === "clear" && c.lien) return false;
     if (st.filter === "lien" && !c.lien) return false;
     if (st.filter === "hist" && !hasHist(c)) return false;
+    if (st.filter === "nolease" && isLease(c)) return false;
     if (st.filter === "star" && !isFav(a, c)) return false;
     if (st.body !== "all" && c.body !== st.body) return false;
     if (st.where !== "all" && a.borough !== st.where) return false;

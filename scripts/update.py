@@ -35,7 +35,7 @@ KEEP_PAST_DAYS = 14
 MODEL_TTL_DAYS = 30
 PHOTO_RETRY_DAYS = 21          # look again for models that had no photo
 PHOTO_BUDGET = 450             # max new photo lookups per run, keeps runs short
-VIN_CACHE_VERSION = 3
+VIN_CACHE_VERSION = 4
 WIKI_UA = "NYCAuctionScout/1.0 (https://github.com/AltecBX/NYC-Auction-Scout)"
 
 BOROUGHS = {"bronx": "Bronx", "brooklyn": "Brooklyn", "queens": "Queens",
@@ -232,7 +232,7 @@ VPIC_KEEP = ["Make", "Model", "ModelYear", "Trim", "Series", "BodyClass", "Displ
              "TransmissionSpeeds", "Doors", "Seats", "PlantCity", "PlantState", "PlantCountry",
              "RearVisibilitySystem", "BlindSpotMon", "AdaptiveCruiseControl", "ForwardCollisionWarning", "CIB",
              "LaneDepartureWarning", "LaneKeepSystem", "RearCrossTrafficAlert", "KeylessIgnition", "ParkAssist",
-             "BodyCabType"]
+             "BodyCabType", "BasePrice"]
 FEATURES = [("RearVisibilitySystem", "Backup camera"), ("BlindSpotMon", "Blind spot"),
             ("AdaptiveCruiseControl", "Adaptive cruise"), ("CIB", "Auto braking"),
             ("ForwardCollisionWarning", "Collision warning"), ("LaneKeepSystem", "Lane keep"),
@@ -873,6 +873,14 @@ def tidy(s):
     return re.sub(r"\b(Llc|Inc|Na|Fcu|Usa|Bmw|Vw|Gm|Cps|Td|Hvt|Esl|Teg|Gfa|Jsac|Ccap|Fin|Svcs)\b",
                   lambda m: m.group(0).upper(), s or "")
 
+def base_price(d):
+    """Manufacturer base price when new, from the vPIC decode. Most makes leave it blank."""
+    try:
+        v = int(float(d.get("BasePrice") or 0))
+    except ValueError:
+        return None
+    return v if 1000 <= v <= 500000 else None
+
 def plant(d):
     c = d.get("PlantCountry", "")
     c = re.sub(r"\s*\(.*?\)", "", c).title().replace("Of", "of")
@@ -899,7 +907,7 @@ def build_car(r, vc, mc, pc, nc, matched, hc):
                trim=" ".join(x for x in [d.get("Trim", ""), d.get("Series", "")] if x),
                body=body_short(d.get("BodyClass", "")), engine=engine(d), hp=hp(d),
                drive=DRIVE.get(d.get("DriveType", ""), d.get("DriveType", "")), trans=trans(d),
-               seats=d.get("Seats", ""), plant=plant(d),
+               seats=d.get("Seats", ""), plant=plant(d), basePrice=base_price(d),
                features=[lab for f, lab in FEATURES if d.get(f) == "Standard"])
     if d.get("ModelYear", "").isdigit() and int(d["ModelYear"]) != r["year"]:
         car["flags"].append(f'City list says {r["year"]}, VIN says {d["ModelYear"]}')
