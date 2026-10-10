@@ -92,9 +92,11 @@ class Stats(unittest.TestCase):
                                      f"</remainingTermToMaturityNumber><reportingPeriodEndingDate>08-31-2026"
                                      f"</reportingPeriodEndingDate>{extra}</assets>")
         xml = (f"<assetData {ns}>" + rec(9000) + rec(0, "<zeroBalanceCode>1</zeroBalanceCode>")
+               + rec(7000, "<zeroBalanceCode>99</zeroBalanceCode>")       # BMW marks open loans 99
+               + rec(4000, "<zeroBalanceCode>1</zeroBalanceCode>")
                + rec(5000, "<repossessedIndicator>true</repossessedIndicator>") + "</assetData>").encode()
         got = list(B.loans(xml))
-        self.assertEqual(len(got), 1)
+        self.assertEqual([g[4] for g in got], [9000.0, 7000.0])
         self.assertEqual(got[0][:5], ("NISSAN", "ROGUE", 2016, "NY", 9000.0))
 
 

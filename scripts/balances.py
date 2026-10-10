@@ -104,6 +104,15 @@ def latest_filings(ua, today):
 def ex102_url(ua, cik, path):
     acc = Path(path).stem
     base = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc.replace('-', '')}"
+    try:                                         # the filing's own list says which document is EX-102
+        head = http(f"{base}/{acc}-index-headers.html", ua).decode("latin-1").replace("&lt;", "<").replace("&gt;", ">")
+        typed = dict(re.findall(r"<TYPE>([^\s<]+)\s*<SEQUENCE>[^<]*<FILENAME>([^\s<]+)", head))
+        if not typed:
+            typed = {t: f for t, f in re.findall(r"<TYPE>([^\s<]+)[\s\S]{0,200}?<FILENAME>([^\s<]+)", head)}
+        if typed.get("EX-102", "").lower().endswith(".xml"):
+            return f"{base}/{typed['EX-102']}"
+    except Exception:
+        pass
     items = json.loads(http(f"{base}/index.json", ua))["directory"]["item"]
     xmls = [i["name"] for i in items if i["name"].lower().endswith(".xml")]
     # ex102.xml, exh1024650082026.xml, bmw2025-a_exhibit102.xml, exh_102.xml; CarMax names it cart20243.xml
@@ -123,7 +132,7 @@ def loans(xml_bytes):
             bal = float(g("reportingPeriodActualEndBalanceAmount") or 0)
         except ValueError:
             bal = 0
-        if bal > 0 and not g("zeroBalanceCode") and g("repossessedIndicator") != "true":
+        if bal > 0 and g("zeroBalanceCode") in ("", "99") and g("repossessedIndicator") != "true":   # 99: not paid off
             try:
                 yield (compact(g("vehicleManufacturerName")), re.sub(r"\s+", " ", g("vehicleModelName").upper()),
                        int(g("vehicleModelYear") or 0), g("obligorGeographicLocation")[:2], bal,
@@ -181,7 +190,8 @@ def main():
             print(f"  {name} {date}: {n} active loans")
         except Exception as e:
             print(f"  {name}: failed, {e}")
-    stats = {}
+    old = json.loads(OUT.read_text()) if only and OUT.exists() else {}
+    stats = {f: v for f, v in old.get("stats", {}).items() if f not in only}     # a partial run keeps other lenders
     for (fid, mk, md, yr), (b, p, t, ny) in agg.items():
         if len(b) < 3:
             continue
@@ -190,12 +200,14 @@ def main():
         if len(ny) >= 5:
             s["ny"] = {"n": len(ny), "p25": pct(ny, .25), "p50": pct(ny, .5), "p75": pct(ny, .75)}
         stats.setdefault(fid, {}).setdefault(mk, {}).setdefault(str(yr), {})[md] = s
-    if not stats:
+    if not agg:
         print("no loans read, keeping the previous file")
         return 1
+    asof = max(asof, old.get("asOf", "")) if old else asof
     OUT.write_text(json.dumps({"asOf": asof, "built": today.isoformat(),
                                "families": {f: FAMILIES[f][0] for f in stats},
-                               "trusts": len(filings), "stats": stats}, separators=(",", ":"), sort_keys=True))
+                               "trusts": len(filings) + (old.get("trusts", 0) if old else 0), "stats": stats},
+                              separators=(",", ":"), sort_keys=True))
     print(f"wrote {OUT.name}: {sum(len(y) for f in stats.values() for m in f.values() for y in m.values())} model groups, "
           f"as of {asof}; makes by family: " + ", ".join(f"{f}:{m}" for (f, m), c in sorted(makes.items()) if c > 500)[:600])
     return 0
