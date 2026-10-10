@@ -254,12 +254,30 @@ const money = s => {
 };
 const usd = n => "$" + n.toLocaleString("en-US");
 
-function lienMath(o) {
+function lienMath(o, bal) {
   const v = money(o.v), b = money(o.b), x = money(o.x) || 0;
   if (v == null || b == null) return "Enter the car's value and your bid to see the most the lien can be before you lose money.";
   const room = v - b - x;
   if (room <= 0) return `Underwater before any lien: ${usd(b + x)} in for a ${usd(v)} car.`;
-  return `It only works if the payoff is under ${usd(room)}. If the lender repossesses instead, you lose ${usd(b + x)}.`;
+  const at = (amt, label) => room - amt >= 0 ? `At ${label} of ${usd(amt)} you come out ${usd(room - amt)} ahead.`
+    : `At ${label} of ${usd(amt)} you are ${usd(amt - room)} underwater.`;
+  const typ = bal && bal.p50 ? ` ${at(bal.p50, "the typical balance")} ${at(bal.p75, "a high balance")}` : "";
+  return `It only works if the payoff is under ${usd(room)}.${typ} If the lender repossesses instead, you lose ${usd(b + x)}.`;
+}
+const carOf = (aid, n) => { const a = DATA.auctions.find(x => x.id === aid); return a && a.cars.find(c => String(c.n) === String(n)); };
+const monthYear = iso => { const d = parse(iso); return `${MON[d.getMonth()]} ${d.getFullYear()}`; };
+
+// What public loans like this one still owe: SEC loan level filings, same lender, make, model and year. No VINs in
+// that data, so it is never this car's payoff.
+function balHTML(c, k) {
+  if (k && k[1] === "Lease company") return "";
+  const b = c.bal;
+  if (!b) return `<p class="bal none">No public loan data for this lender, model and year. Lenders that sell loans privately, like Westlake, Credit Acceptance and Lendbuzz, file nothing.</p>`;
+  const what = `${c.year} ${esc(c.make)} ${esc(c.model)}`;
+  return `<div class="bal"><div class="k">What similar loans still owe, SEC filings ${b.asOf ? monthYear(b.asOf) : ""}</div>
+    <p><b>${usd(b.p25)} to ${usd(b.p75)}</b> for the middle half of ${fmtN(b.n)} public ${esc(b.fam)} loans on a ${what}. Median ${usd(b.p50)}${b.pay ? `, about ${usd(b.pay)} a month` : ""}${b.left ? ` with ${b.left} months left` : ""}.</p>
+    ${b.ny ? `<p>New York loans only: ${fmtN(b.ny.n)}, median ${usd(b.ny.p50)} (${usd(b.ny.p25)} to ${usd(b.ny.p75)}).</p>` : ""}
+    <p class="why">Typical for this lender, model and year, not this car's payoff: the public data has no VINs. Filed as ${esc(b.name)}.</p></div>`;
 }
 
 function lienHTML(a, c) {
@@ -273,9 +291,10 @@ function lienHTML(a, c) {
       ${k ? `<p class="lk">${esc(k[2])}</p>` : ""}
       <p>You buy it subject to this lien. The lienholder can repossess it from you, and the Sheriff does not tell bidders about liens.</p>
       <p>The amount owed is private. Lenders give a payoff only to the borrower or someone the borrower authorizes in writing, so it cannot be looked up before the sale.</p>
+      ${balHTML(c, k)}
       <div class="calc"><div class="k">Underwater check, your numbers</div>
         <div class="row">${fld("v", "Car value", "$")}${fld("b", "Your bid", "$")}${fld("x", "Other costs", "Reg, key")}</div>
-        <p class="out">${esc(lienMath(o))}</p>
+        <p class="out">${esc(lienMath(o, c.bal))}</p>
         <a class="val" href="${esc(kbb || `https://www.google.com/search?q=${q}`)}" target="_blank" rel="noopener">${kbb ? "KBB value" : "Look up value"}</a>
       </div>
     </div></details>`;
@@ -399,7 +418,7 @@ $("list").addEventListener("input", e => {
   if (!f) return;
   const o = noteOf(e.target.dataset.a, e.target.dataset.n);
   o[f] = e.target.value; put("notes", saved);
-  e.target.closest(".calc").querySelector(".out").textContent = lienMath(o);
+  e.target.closest(".calc").querySelector(".out").textContent = lienMath(o, (carOf(e.target.dataset.a, e.target.dataset.n) || {}).bal);
 });
 $("list").addEventListener("change", e => {
   if (!e.target.matches(".note input")) return;
