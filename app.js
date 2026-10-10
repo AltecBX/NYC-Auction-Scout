@@ -193,6 +193,50 @@ function histHTML(c) {
     ${manual}</div></details>`;
 }
 
+// Lien heads up. The payoff is private, so the card explains the risk and does the underwater math with Jerry's numbers.
+// Lease names checked Oct 2026: Toyota Lease Trust, Honda Lease Trust and its trustee HVT Inc, Hyundai Lease Titling
+// Trust, Nissan Infiniti LT, VW Credit Leasing, Ford Credit's CAB East, CAB West and HTD Leasing, Chrysler Capital's
+// CCAP Auto Lease. Each is the owner of record of a leased car, not a lender.
+const LIEN_KIND = [
+  [/\bLEASE\b|\bLEASING\b|TITLING TRUST|\bHVT\b|\bCAB (?:EAST|WEST)\b|NISSAN.?INFINITI LT/i, "Lease company",
+   "A leased car is owned by the leasing company, not by the person it was seized from. Treat it as likely to be taken back."],
+  [/TITLE ?LOANS?\b|TITLEMAX/i, "Title loan", "A title loan company holds this lien. The loan is secured by this car's title."],
+  [/AUTO SALES|MOTOR CARS|AUTO GROUP|AUTO MALL|CHRYSLER LLC|\bMOTORS? (?:INC|LLC)\b/i, "Dealer loan",
+   "A car dealer holds this lien, so the dealer itself financed the car."],
+];
+const lienKind = name => LIEN_KIND.find(([rx]) => rx.test((name || "").split("/")[0]));   // the first name is the main lienholder
+const money = s => {
+  const m = String(s || "").replace(/[$,\s]/g, "").match(/^(\d+(?:\.\d+)?)(k)?$/i);
+  return m ? Math.round(parseFloat(m[1]) * (m[2] ? 1000 : 1)) : null;
+};
+const usd = n => "$" + n.toLocaleString("en-US");
+
+function lienMath(o) {
+  const v = money(o.v), b = money(o.b), x = money(o.x) || 0;
+  if (v == null || b == null) return "Enter the car's value and your bid to see the most the lien can be before you lose money.";
+  const room = v - b - x;
+  if (room <= 0) return `Underwater before any lien: ${usd(b + x)} in for a ${usd(v)} car.`;
+  return `It only works if the payoff is under ${usd(room)}. If the lender repossesses instead, you lose ${usd(b + x)}.`;
+}
+
+function lienHTML(a, c) {
+  if (!c.lien) return `<div class="lienbar c">${ICON.check}<span>No lienholder listed</span></div>`;
+  const k = lienKind(c.lien), o = saved[keyOf(a.id, c.n)] || {};
+  const fld = (f, label, ph) => `<label><span>${label}</span><input inputmode="decimal" autocomplete="off" data-f="${f}" data-a="${esc(a.id)}" data-n="${c.n}" value="${esc(o[f] || "")}" placeholder="${ph}"></label>`;
+  const q = encodeURIComponent([c.year || c.listYear, c.make || c.listMake, c.model, c.trim, "value"].filter(Boolean).join(" "));
+  return `<details class="lienx"><summary class="lienbar l">${ICON.lock}<span>Lien held by <b>${esc(c.lien)}</b>${k ? ` <em>${k[1]}</em>` : ""}</span></summary>
+    <div class="lienin">
+      ${k ? `<p class="lk">${esc(k[2])}</p>` : ""}
+      <p>You buy it subject to this lien. The lienholder can repossess it from you, and the Sheriff does not tell bidders about liens.</p>
+      <p>The amount owed is private. Lenders give a payoff only to the borrower or someone the borrower authorizes in writing, so it cannot be looked up before the sale.</p>
+      <div class="calc"><div class="k">Underwater check, your numbers</div>
+        <div class="row">${fld("v", "Car value", "$")}${fld("b", "Your bid", "$")}${fld("x", "Other costs", "Reg, key")}</div>
+        <p class="out">${esc(lienMath(o))}</p>
+        <a class="val" href="https://www.google.com/search?q=${q}" target="_blank" rel="noopener">Look up value</a>
+      </div>
+    </div></details>`;
+}
+
 function card({ a, c }) {
   const s = saved[keyOf(a.id, c.n)] || {};
   const yr = c.year || c.listYear;
@@ -233,7 +277,7 @@ function card({ a, c }) {
       <div class="title-row"><h2 class="title">${name}</h2>${c.trim ? `<div class="trim">${esc(c.trim)}</div>` : ""}</div>
       ${specs.length ? `<div class="specs">${specs.map(x => `<span>${esc(x)}</span>`).join("")}</div>` : ""}
       ${(c.flags || []).map(f => `<div class="flag">${esc(f)}</div>`).join("")}
-      <div class="lienbar ${c.lien ? "l" : "c"}">${c.lien ? ICON.lock + `<span>Lien held by <b>${esc(c.lien)}</b></span>` : ICON.check + "<span>No lienholder listed</span>"}</div>
+      ${lienHTML(a, c)}
       ${safety}
       ${feats.length ? `<div class="feats">${feats.map(f => `<span>${esc(f)}</span>`).join("")}</div>` : ""}
       ${histHTML(c)}
@@ -303,6 +347,13 @@ $("list").addEventListener("click", e => {
   b.setAttribute("aria-pressed", String(o.s));
   renderViews();
   if (st.view === "fav" || st.filter === "star") render(); else renderChips(pool());
+});
+$("list").addEventListener("input", e => {
+  const f = e.target.dataset.f;
+  if (!f) return;
+  const o = noteOf(e.target.dataset.a, e.target.dataset.n);
+  o[f] = e.target.value; put("notes", saved);
+  e.target.closest(".calc").querySelector(".out").textContent = lienMath(o);
 });
 $("list").addEventListener("change", e => {
   if (!e.target.matches(".note input")) return;

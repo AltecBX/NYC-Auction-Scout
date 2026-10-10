@@ -161,6 +161,27 @@ button,select,input{font:inherit;color:inherit}
 .lienbar.l{background:var(--lien-bg);color:var(--lien)}
 .lienbar.c{background:var(--clear-bg);color:var(--clear)}
 .lienbar b{font-weight:700}
+/* lien heads up: tap the lien bar for the risk and an underwater check with Jerry's own numbers */
+.lienx{border-radius:9px;background:var(--lien-bg);color:var(--lien)}
+.lienx summary{cursor:pointer;list-style:none;min-height:40px;align-items:center}
+.lienx summary::-webkit-details-marker{display:none}
+.lienx summary span{flex:1;min-width:0}
+.lienx summary::after{content:"";width:8px;height:8px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;
+  transform:rotate(45deg);margin:-4px 2px 0 6px;transition:transform .2s;flex:0 0 auto}
+.lienx[open] summary::after{transform:rotate(225deg);margin-top:4px}
+.lienx summary em{font-style:normal;font-weight:700;font-size:.76rem;border:1px solid currentColor;border-radius:999px;
+  padding:0 7px;margin-left:4px;white-space:nowrap;display:inline-block}
+.lienin{padding:0 10px 10px;display:flex;flex-direction:column;gap:8px;font-size:.88rem;color:var(--ink)}
+.lienin p{margin:0}
+.lienin .lk{font-weight:700;color:var(--lien)}
+.calc{background:var(--card);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px}
+.calc .k{font-size:.8rem;color:var(--ink-2);font-weight:600}
+.calc .row{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.calc label{display:flex;flex-direction:column;gap:2px;font-size:.74rem;color:var(--ink-2);min-width:0}
+.calc input{height:40px;width:100%;min-width:0;border-radius:8px;border:1px solid var(--rule);background:transparent;
+  padding:0 8px;font-size:16px;color:var(--ink)}
+.calc .out{font-weight:700}
+.calc .val{align-self:flex-start;min-height:36px;display:inline-flex;align-items:center;font-weight:600;font-size:.88rem}
 
 .safety{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--rule);border-radius:10px;overflow:hidden}
 .safety>div{padding:8px 6px;text-align:center}
