@@ -18,11 +18,13 @@ OUT = ROOT / "data" / "balance_stats.json"
 GAP = 0.2                 # SEC allows 10 requests a second; stay well under
 NS = "{http://www.sec.gov/edgar/document/absee/autoloan/assetdata}"
 
-# Lienholder name on the city list -> trusts on EDGAR that hold that lender's public loans.
+# Lienholder name on the city list -> trusts on EDGAR that hold that lender's public loans. The label is what cards
+# show: Capital One's public deals hold only its prime loans, Santander's include its Chrysler Capital brand, Hyundai
+# Capital's include Kia and Genesis, GM Financial's include AmeriCredit, World Omni services Southeast Toyota.
 FAMILIES = {
-    "santander": ("Santander Consumer (includes its Chrysler Capital brand)", r"SANTANDER|CHRYSLER CAPITAL",
+    "santander": ("Santander Consumer", r"SANTANDER(?! BANK)|CHRYSLER CAPITAL",
                   r"^(SANTANDER DRIVE|DRIVE) AUTO RECEIVABLES TRUST"),
-    "capitalone": ("Capital One, prime loans only", r"CAPITAL ONE", r"^CAPITAL ONE PRIME AUTO RECEIVABLES TRUST"),
+    "capitalone": ("Capital One prime", r"CAPITAL ONE", r"^CAPITAL ONE PRIME AUTO RECEIVABLES TRUST"),
     "ally": ("Ally", r"\bALLY\b", r"^ALLY AUTO RECEIVABLES TRUST"),
     "toyota": ("Toyota Motor Credit", r"TOYOTA MOTOR CREDIT|LEXUS FINANCIAL", r"^TOYOTA AUTO RECEIVABLES"),
     "honda": ("American Honda Finance", r"AMERICAN HONDA FINANCE|HONDA FINANCIAL|ACURA FINANCIAL",
@@ -30,16 +32,16 @@ FAMILIES = {
     "exeter": ("Exeter", r"EXETER", r"^EXETER (SELECT )?AUTOMOBILE RECEIVABLES TRUST"),
     "carvana": ("Carvana", r"CARVANA", r"^CARVANA AUTO RECEIVABLES TRUST"),
     "bridgecrest": ("Bridgecrest", r"BRIDGECREST", r"^BRIDGECREST LENDING AUTO SECURITIZATION TRUST"),
-    "gmf": ("GM Financial and AmeriCredit", r"AMERICREDIT|GM FINANCIAL|GENERAL MOTORS FINANCIAL",
+    "gmf": ("GM Financial", r"AMERICREDIT|GM FINANCIAL|GENERAL MOTORS FINANCIAL",
             r"^(AMERICREDIT AUTOMOBILE|GM FINANCIAL CONSUMER AUTOMOBILE) RECEIVABLES TRUST"),
-    "hyundai": ("Hyundai Capital (Hyundai, Kia, Genesis)", r"HYUNDAI (MOTOR FINANCE|CAPITAL)|KIA (MOTORS )?FINANCE|GENESIS FINANCE",
+    "hyundai": ("Hyundai Capital", r"HYUNDAI (MOTOR FINANCE|CAPITAL)|KIA (MOTORS )?FINANCE|GENESIS FINANCE",
                 r"^HYUNDAI AUTO RECEIVABLES TRUST"),
     "vw": ("VW Credit", r"VW CREDIT(?!.*LEAS)|VOLKSWAGEN CREDIT|AUDI FINANCIAL", r"^VOLKSWAGEN AUTO LOAN ENHANCED TRUST"),
     "mercedes": ("Mercedes-Benz Financial", r"MERCEDES.?BENZ FIN|MBFS", r"^MERCEDES-BENZ AUTO RECEIVABLES TRUST"),
     "bmw": ("BMW Financial", r"\bBMW\b", r"^BMW VEHICLE OWNER TRUST"),
     "ford": ("Ford Credit", r"FORD (MOTOR )?CREDIT", r"^FORD CREDIT AUTO OWNER TRUST"),
     "nissan": ("Nissan Motor Acceptance", r"NISSAN MOTOR ACCEPTANCE|INFINITI FINANCIAL", r"^NISSAN AUTO RECEIVABLES"),
-    "worldomni": ("World Omni (Southeast Toyota)", r"WORLD OMNI|SOUTHEAST TOYOTA", r"^WORLD OMNI AUTO RECEIVABLES TRUST"),
+    "worldomni": ("World Omni", r"WORLD OMNI|SOUTHEAST TOYOTA", r"^WORLD OMNI AUTO RECEIVABLES TRUST"),
     "carmax": ("CarMax", r"CARMAX", r"^CARMAX AUTO OWNER TRUST"),
 }
 

@@ -259,9 +259,9 @@ function lienMath(o, bal) {
   if (v == null || b == null) return "Enter the car's value and your bid to see the most the lien can be before you lose money.";
   const room = v - b - x;
   if (room <= 0) return `Underwater before any lien: ${usd(b + x)} in for a ${usd(v)} car.`;
-  const at = (amt, label) => room - amt >= 0 ? `At ${label} ${usd(amt)} you come out ${usd(room - amt)} ahead.`
-    : `At ${label} ${usd(amt)} you are ${usd(amt - room)} underwater.`;
-  const typ = bal && bal.p50 ? ` ${at(bal.p50, "the typical")} ${at(bal.p75, "a high")}` : "";
+  const at = (amt, label) => room - amt >= 0 ? `At ${label} of ${usd(amt)} you come out ${usd(room - amt)} ahead.`
+    : `At ${label} of ${usd(amt)} you are ${usd(amt - room)} underwater.`;
+  const typ = bal && bal.p50 ? ` ${at(bal.p50, "the typical balance")} ${at(bal.p75, "a high balance")}` : "";
   return `It only works if the payoff is under ${usd(room)}.${typ} If the lender repossesses instead, you lose ${usd(b + x)}.`;
 }
 const carOf = (aid, n) => { const a = DATA.auctions.find(x => x.id === aid); return a && a.cars.find(c => String(c.n) === String(n)); };
@@ -275,7 +275,7 @@ function balHTML(c, k) {
   if (!b) return `<p class="bal none">No public loan data for this lender, model and year. Lenders that sell loans privately, like Westlake, Credit Acceptance and Lendbuzz, file nothing.</p>`;
   const what = `${c.year} ${esc(c.make)} ${esc(c.model)}`;
   return `<div class="bal"><div class="k">What similar loans still owe, SEC filings ${b.asOf ? monthYear(b.asOf) : ""}</div>
-    <p><b>${usd(b.p25)} to ${usd(b.p75)}</b> for the middle half of ${fmtN(b.n)} ${esc(b.fam)} loans on a ${what}. Median ${usd(b.p50)}${b.pay ? `, about ${usd(b.pay)} a month` : ""}${b.left ? ` with ${b.left} months left` : ""}.</p>
+    <p><b>${usd(b.p25)} to ${usd(b.p75)}</b> for the middle half of ${fmtN(b.n)} public ${esc(b.fam)} loans on a ${what}. Median ${usd(b.p50)}${b.pay ? `, about ${usd(b.pay)} a month` : ""}${b.left ? ` with ${b.left} months left` : ""}.</p>
     ${b.ny ? `<p>New York loans only: ${fmtN(b.ny.n)}, median ${usd(b.ny.p50)} (${usd(b.ny.p25)} to ${usd(b.ny.p75)}).</p>` : ""}
     <p class="why">Typical for this lender, model and year, not this car's payoff: the public data has no VINs. Filed as ${esc(b.name)}.</p></div>`;
 }

@@ -936,7 +936,7 @@ def balance_for(lien, d, bs, min_n=5):
             out = {k: st[k] for k in ("n", "p25", "p50", "p75", "pay", "left", "name") if st.get(k) is not None}
             if st.get("ny"):
                 out["ny"] = st["ny"]
-            return {**out, "fam": bs["families"].get(fid, fid), "asOf": bs.get("asOf", "")}
+            return {**out, "fam": balances.FAMILIES[fid][0], "asOf": bs.get("asOf", "")}
         if best:
             return None                                # matched, but too few loans to say anything
     return None

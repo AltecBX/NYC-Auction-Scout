@@ -37,7 +37,7 @@ class Families(unittest.TestCase):
                  # private lenders, lease companies and old Chrysler finance file nothing public
                  "WESTLAKE FINANCIAL SERVICES": None, "CREDIT ACCEPTANCE CORP": None, "LENDBUZZ FUNDING LLC": None,
                  "VW CREDIT LEASING LTD": None, "HYUNDAI LEASE TITLING TRUST": None, "DC FIN SVCS AMER LLC": None,
-                 "CCAP AUTO LEASE LTD": None}
+                 "CCAP AUTO LEASE LTD": None, "SANTANDER BANK N A": None}     # the bank is not Santander Consumer
         for name, want in cases.items():
             self.assertEqual(B.family_of(name), want, name)
 
@@ -46,7 +46,7 @@ class Matching(unittest.TestCase):
     def test_exact_model(self):
         b = U.balance_for("CAPITAL ONE AUTO FINANCE", car("NISSAN", "Rogue", 2016), STATS)
         self.assertEqual((b["name"], b["p50"], b["n"]), ("ROGUE", 9000, 40))
-        self.assertEqual(b["fam"], "Capital One, prime loans only")
+        self.assertEqual(b["fam"], "Capital One prime")
 
     def test_sibling_model_is_not_used(self):
         stats = {**STATS, "stats": {"capitalone": {"NISSAN": {"2016": {"ROGUESPORT": st(90, 12000, "ROGUE SPORT")}}}}}
