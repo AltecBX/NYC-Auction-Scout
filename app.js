@@ -195,11 +195,13 @@ function histHTML(c) {
     ${manual}</div></details>`;
 }
 
-// Value sense. No free source allows automatic market values (KBB's terms forbid automated lookups), so the card
-// estimates mileage the way Jerry does (10,000 to 20,000 a year, or from a dated reading in Vehicle history) and
-// links KBB with that mileage filled in. Base price is the maker's price when new, from the VIN decode, when present.
+// Value. Book value: the median NADA or Kelley Blue Book value lenders recorded on used cars of this make, model and
+// year financed in the last 12 months (SEC loan filings, scripts/balances.py). One line on the card; tap for the range,
+// estimated miles (10,000 to 20,000 a year, or from a dated reading in Vehicle history) and KBB at those miles.
 const round1k = n => Math.round(n / 1000) * 1000;
+const round100 = n => Math.round(n / 100) * 100;
 const fmtN = n => n.toLocaleString("en-US");
+const ymLabel = ym => `${MON[+ym.slice(5, 7) - 1]} ${ym.slice(0, 4)}`;
 function milesEst(c) {
   const ev = ((c.history || {}).ev || []).filter(e => e.miles > 0);
   const dated = ev.filter(e => (e.dates || []).length)
@@ -225,14 +227,18 @@ function kbbURL(c, miles) {
   return `https://www.kbb.com/${kbbSlug(c.make)}/${kbbSlug(m)}/${c.year}/styles/?intent=trade-in-sell&mileage=${miles}`;
 }
 function valueHTML(c) {
-  const m = c.model && milesEst(c);
-  if (!m) return "";
-  const mid = round1k((m.lo + m.hi) / 2), url = kbbURL(c, mid);
-  return `<div class="valbox">
-    <div class="vr"><span class="k">Miles, estimate</span><b>${m.lo === m.hi ? `At least ${fmtN(m.lo)}` : `${fmtN(m.lo)} to ${fmtN(m.hi)}`}</b><span class="why">${esc(m.why)}</span></div>
-    ${c.basePrice ? `<div class="vr"><span class="k">Base price new</span><b>${usd(c.basePrice)}</b><span class="why">Maker's price before options, from the VIN decode. Not today's value.</span></div>` : ""}
-    ${url ? `<a class="kbb" href="${esc(url)}" target="_blank" rel="noopener">KBB value at ${fmtN(mid)} miles</a>` : ""}
-  </div>`;
+  if (!c.model) return "";
+  const v = c.val, m = milesEst(c), mid = m && round1k((m.lo + m.hi) / 2), url = m && kbbURL(c, mid);
+  const what = `a used ${c.year} ${esc(c.make)} ${esc(c.model)}`;
+  const about = v
+    ? `<p><b>${usd(round100(v.p25))} to ${usd(round100(v.p75))}</b> for the middle half. NADA or Kelley Blue Book value lenders recorded on ${fmtN(v.n)} loans for ${what}, ${ymLabel(v.from)} to ${ymLabel(v.to)}, from public SEC loan filings.</p>
+       <p class="why">Cars dealers sold, at their own miles and condition, any trim. Not this car: no keys, sold as is.</p>`
+    : `<p class="why">Fewer than 10 loans for ${what} in public SEC loan filings from the last 12 months.</p>`;
+  return `<details class="valx"><summary><span class="k">Book value</span>${v ? `<b>${usd(round100(v.p50))}</b>` : `<span class="none">No data</span>`}</summary>
+    <div class="valin">${about}
+      ${m ? `<div class="vr"><span class="k">Miles, estimate</span><b>${m.lo === m.hi ? `At least ${fmtN(m.lo)}` : `${fmtN(m.lo)} to ${fmtN(m.hi)}`}</b><span class="why">${esc(m.why)}</span></div>` : ""}
+      ${url ? `<a class="kbb" href="${esc(url)}" target="_blank" rel="noopener">KBB value at ${fmtN(mid)} miles</a>` : ""}
+    </div></details>`;
 }
 
 // Lien heads up. The payoff is private, so the card explains the risk and does the underwater math with Jerry's numbers.

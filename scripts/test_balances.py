@@ -1,4 +1,4 @@
-"""Offline tests for typical lien balances (scripts/balances.py and balance_for in update.py).
+"""Offline tests for typical lien balances and book values (scripts/balances.py, balance_for and value_for in update.py).
 Run: python scripts/test_balances.py"""
 import sys, unittest
 from pathlib import Path
@@ -98,6 +98,49 @@ class Stats(unittest.TestCase):
         got = list(B.loans(xml))
         self.assertEqual([g[4] for g in got], [9000.0, 7000.0])
         self.assertEqual(got[0][:5], ("NISSAN", "ROGUE", 2016, "NY", 9000.0))
+
+
+def asset(fields):
+    return lambda k: fields.get(k, "")
+
+class BookValues(unittest.TestCase):
+    def used(self, src, value="14000", orig="03/2026", **kw):
+        return asset({"vehicleNewUsedCode": "2", "vehicleValueSourceCode": src, "vehicleValueAmount": value,
+                      "originationDate": orig, "vehicleModelYear": "2017", "vehicleManufacturerName": "Chevrolet Trucks",
+                      "vehicleModelName": "Silverado  1500", **kw})
+
+    def test_only_pricing_guide_values(self):
+        self.assertEqual(B.value_of(self.used("98"), "santander"), ("CHEVROLE", "SILVERADO 1500", 2017, "2026-03", 14000.0))
+        self.assertIsNotNone(B.value_of(self.used("3"), "carmax"))            # Kelley Blue Book from any lender
+        self.assertIsNone(B.value_of(self.used("98"), "carmax"))              # CarMax 98 is its own sale price
+        self.assertIsNone(B.value_of(self.used("98"), "mercedes"))            # Manheim wholesale
+        self.assertIsNone(B.value_of(self.used("2"), "bmw"))                  # MSRP
+        self.assertIsNone(B.value_of(self.used("98", vehicleNewUsedCode="1"), "santander"))   # new car
+        self.assertIsNone(B.value_of(self.used("98", value="0"), "santander"))
+        self.assertIsNone(B.value_of(self.used("98", value="15998"), "exeter"))   # a dealer's sale price, not a guide value
+        self.assertIsNotNone(B.value_of(self.used("3", value="15998"), "exeter"))
+        self.assertEqual(B.value_of(self.used("98", orig="11-15-2025"), "exeter")[3], "2025-11")
+
+    def test_make_key_merges_lender_spellings(self):
+        self.assertEqual({B.make_key(m) for m in ("CHEVROLET", "Chevrolet Trucks", "CHEVROLE")}, {"CHEVROLE"})
+        self.assertEqual(B.make_key("Mercedes-Benz"), "MERCEDES")
+        self.assertEqual(B.make_key("RAM"), "RAM")
+
+    def test_last_12_months_only(self):
+        months = ["2025-09"] * 5 + ["2025-10"] * 3 + ["2026-09"] * 3      # Sep 2025 is 13 months before Sep 2026
+        vals = {("HONDA", "ACCORD", 2017): (months, [1000] * 5 + [12000, 14000, 16000, 13000, 15000, 17000], {"ACCORD": 11})}
+        st = B.value_stats(vals, "2026-09-30")["HONDA"]["2017"]["ACCORD"]
+        self.assertEqual((st["n"], st["p50"], st["from"], st["to"]), (6, 15000, "2025-10", "2026-09"))
+        self.assertEqual(B.value_stats(vals, "2026-09-30", min_n=7), {})
+
+    def test_value_for(self):
+        vs = {"stats": {"CHEVROLE": {"2018": {"SILVERADO1500": {**st(40, 24000, "SILVERADO 1500"), "from": "2025-10", "to": "2026-09"},
+                                              "SILVERADO2500HD": {**st(12, 33000, "SILVERADO 2500HD"), "from": "2025-10", "to": "2026-09"}}},
+                        "NISSAN": {"2016": {"ROGUE": {**st(9, 9000, "ROGUE"), "from": "2025-10", "to": "2026-09"}}}}}
+        v = U.value_for(car("CHEVROLET", "Silverado", 2018, Series="1500"), vs)
+        self.assertEqual((v["p50"], v["n"], v["name"]), (24000, 40, "SILVERADO 1500"))
+        self.assertIsNone(U.value_for(car("NISSAN", "Rogue", 2016), vs))     # 9 loans, needs 10
+        self.assertIsNone(U.value_for(car("NISSAN", "Rogue", 2016), {}))
 
 
 if __name__ == "__main__":
