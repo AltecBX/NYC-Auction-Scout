@@ -27,6 +27,7 @@ NCAP_CACHE = DATA / "ncap_cache.json"
 NAMES_CACHE = DATA / "nhtsa_models.json"
 HIST_CACHE = DATA / "history_cache.json"
 BAL_STATS = DATA / "balance_stats.json"
+VAL_STATS = DATA / "value_stats.json"
 RAW = DATA / "raw.json"
 
 PAGE = "https://www.nyc.gov/site/finance/vehicles/auctions.page"
@@ -875,14 +876,6 @@ def tidy(s):
     return re.sub(r"\b(Llc|Inc|Na|Fcu|Usa|Bmw|Vw|Gm|Cps|Td|Hvt|Esl|Teg|Gfa|Jsac|Ccap|Fin|Svcs)\b",
                   lambda m: m.group(0).upper(), s or "")
 
-def base_price(d):
-    """Manufacturer base price when new, from the vPIC decode. Most makes leave it blank."""
-    try:
-        v = int(float(d.get("BasePrice") or 0))
-    except ValueError:
-        return None
-    return v if 1000 <= v <= 500000 else None
-
 def plant(d):
     c = d.get("PlantCountry", "")
     c = re.sub(r"\s*\(.*?\)", "", c).title().replace("Of", "of")
@@ -897,16 +890,16 @@ def make_name(mk):
 # ---------- typical lien balances (scripts/balances.py) ----------
 BAL_ELEC = re.compile(r"HYBR|PHEV|PLUGIN|ENERGI|4XE|BEV|ELECTRIC|LIGHTNING|ETRON|EV$")
 
-def balance_for(lien, d, bs, min_n=5):
-    """What public loans from this lien's lender on the same make, model and year still owe (SEC loan data).
-    Never this car's payoff. None when the lender files nothing public or too few loans match."""
-    fid = balances.family_of(lien)
-    if not fid or not bs or not d.get("Make") or not d.get("Model") or not d.get("ModelYear", "").isdigit():
+def sec_match(d, makes, min_n):
+    """Stats for this car's make, model and year in SEC loan data (make -> year -> compact model -> stats), matched
+    the way the NHTSA matcher works: no sibling models, hybrid names only for hybrids, series like 1500 break ties.
+    None when nothing matches or the match has fewer than min_n loans."""
+    if not makes or not d.get("Make") or not d.get("Model") or not d.get("ModelYear", "").isdigit():
         return None
     C = balances.compact
-    fam, mk = bs.get("stats", {}).get(fid, {}), C(d["Make"])
+    mk = C(d["Make"])
     models = {}
-    for m, years in fam.items():                 # some lenders cut makes to 8 letters: CHEVROLE, MERCEDES
+    for m, years in makes.items():               # some lenders cut makes to 8 letters: CHEVROLE, MERCEDES
         if m == mk or (len(m) >= 4 and mk.startswith(m)) or (len(mk) >= 4 and m.startswith(mk)):
             for cm, st in years.get(d["ModelYear"], {}).items():
                 if cm not in models or st["n"] > models[cm]["n"]:
@@ -931,17 +924,31 @@ def balance_for(lien, d, bs, min_n=5):
             score = (marked == elec, rest == "", any(w.startswith(rest) for w in want if rest), st["n"])
             if best is None or score > best[0]:
                 best = (score, st)
-        if best and best[1]["n"] >= min_n:
-            st = best[1]
-            out = {k: st[k] for k in ("n", "p25", "p50", "p75", "pay", "left", "name") if st.get(k) is not None}
-            if st.get("ny"):
-                out["ny"] = st["ny"]
-            return {**out, "fam": balances.FAMILIES[fid][0], "asOf": bs.get("asOf", "")}
         if best:
-            return None                                # matched, but too few loans to say anything
+            return best[1] if best[1]["n"] >= min_n else None   # matched, but too few loans to say anything
     return None
 
-def build_car(r, vc, mc, pc, nc, matched, hc, bs=None):
+def balance_for(lien, d, bs, min_n=5):
+    """What public loans from this lien's lender on the same make, model and year still owe (SEC loan data).
+    Never this car's payoff. None when the lender files nothing public or too few loans match."""
+    fid = balances.family_of(lien)
+    st = fid and bs and sec_match(d, bs.get("stats", {}).get(fid, {}), min_n)
+    if not st:
+        return None
+    out = {k: st[k] for k in ("n", "p25", "p50", "p75", "pay", "left", "name") if st.get(k) is not None}
+    if st.get("ny"):
+        out["ny"] = st["ny"]
+    return {**out, "fam": balances.FAMILIES[fid][0], "asOf": bs.get("asOf", "")}
+
+def value_for(d, vs, min_n=10):
+    """Book value: what lenders' pricing guides (NADA, Kelley Blue Book) said used cars of this make, model and year
+    were worth when financed in the last 12 months. Cars dealers sold, at their own miles and condition, all trims."""
+    st = vs and sec_match(d, vs.get("stats", {}), min_n)
+    if not st:
+        return None
+    return {k: st[k] for k in ("n", "p25", "p50", "p75", "from", "to", "name")}
+
+def build_car(r, vc, mc, pc, nc, matched, hc, bs=None, vs=None):
     v = r["vin"]
     car = {"n": r["n"], "listYear": r["year"], "listMake": r["make"], "plate": f'{r["plate"]} {r["st"]}'.strip(),
            "vin": v, "lien": tidy(r["lien"]), "flags": [], "history": history.card(v, hc, vin_ok(v))}
@@ -956,10 +963,11 @@ def build_car(r, vc, mc, pc, nc, matched, hc, bs=None):
                trim=" ".join(x for x in [d.get("Trim", ""), d.get("Series", "")] if x),
                body=body_short(d.get("BodyClass", "")), engine=engine(d), hp=hp(d),
                drive=DRIVE.get(d.get("DriveType", ""), d.get("DriveType", "")), trans=trans(d),
-               seats=d.get("Seats", ""), plant=plant(d), basePrice=base_price(d),
+               seats=d.get("Seats", ""), plant=plant(d),
                features=[lab for f, lab in FEATURES if d.get(f) == "Standard"])
     if d.get("ModelYear", "").isdigit() and int(d["ModelYear"]) != r["year"]:
         car["flags"].append(f'City list says {r["year"]}, VIN says {d["ModelYear"]}')
+    car["val"] = value_for(d, vs)
     if r["lien"].strip():
         car["bal"] = balance_for(r["lien"], d, bs)
     if mk and d.get("Model") and d.get("ModelYear"):
@@ -1012,7 +1020,7 @@ def main():
     raw = load(RAW, {})
     vc, mc = load(VIN_CACHE, {}), load(MODEL_CACHE, {})
     pc, nc, nn = load(PHOTO_CACHE, {}), load(NCAP_CACHE, {}), load(NAMES_CACHE, {})
-    hc, bs = load(HIST_CACHE, {}), load(BAL_STATS, {})
+    hc, bs, vs = load(HIST_CACHE, {}), load(BAL_STATS, {}), load(VAL_STATS, {})
     today = dt.date.today()
     cutoff = (today - dt.timedelta(days=KEEP_PAST_DAYS)).isoformat()
 
@@ -1076,7 +1084,7 @@ def main():
     auctions = []
     for x in sorted(raw.values(), key=lambda x: (x["date"], x["borough"])):
         meta = {k: v for k, v in x.items() if k not in ("rows", "hash")}
-        auctions.append({**meta, "cars": [build_car(r, vc, mc, pc, nc, matched, hc, bs) for r in x["rows"]]})
+        auctions.append({**meta, "cars": [build_car(r, vc, mc, pc, nc, matched, hc, bs, vs) for r in x["rows"]]})
     seen = {}
     for x in auctions:
         for c in x["cars"]:

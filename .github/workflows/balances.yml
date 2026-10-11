@@ -1,6 +1,6 @@
-name: Update lien balance estimates
+name: Update lien balances and book values
 
-# Typical balances on public auto loans (SEC loan level filings), read by scripts/update.py for lien cards.
+# Typical balances on public auto loans and book values of used cars (SEC loan level filings), read by scripts/update.py.
 # Needs the repository secret SEC_CONTACT (an email the SEC can reach). Without it the run skips and keeps the last file.
 on:
   schedule:
@@ -31,8 +31,8 @@ jobs:
         run: |
           git config user.name "auction-bot"
           git config user.email "auction-bot@users.noreply.github.com"
-          git add data/balance_stats.json
+          git add data/balance_stats.json data/value_stats.json
           if git diff --cached --quiet; then echo "No changes"; exit 0; fi
-          git commit -m "Update lien balance estimates"
+          git commit -m "Update lien balances and book values"
           for i in 1 2 3; do git pull --rebase -X theirs origin main && git push && exit 0; sleep 5; done
           exit 1

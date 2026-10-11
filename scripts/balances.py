@@ -5,9 +5,13 @@ make, model, year, state, original amount, current balance, payment, months left
 never a specific car's payoff, only the range for that lender, model and year. Lenders that sell privately
 (Westlake, Credit Acceptance, Lendbuzz, Global Lending, CPS and others) file nothing.
 
+The same files record each car's value when the loan was made. For used cars whose lender took that value from a
+pricing guide (NADA or Kelley Blue Book), the median over the last 12 months of loans is a book value by make, model
+and year: data/value_stats.json.
+
 Run monthly:  SEC_CONTACT=you@example.com python scripts/balances.py
 The SEC asks automated requests to name a contact (User-Agent). The address comes from the environment only and is
-never written to the repo. Output: data/balance_stats.json, read by update.py.
+never written to the repo. Output: data/balance_stats.json and data/value_stats.json, read by update.py.
 """
 import array, datetime as dt, gzip, io, json, os, re, sys, time, urllib.request
 import xml.etree.ElementTree as ET
@@ -15,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "data" / "balance_stats.json"
+VOUT = ROOT / "data" / "value_stats.json"
 GAP = 0.2                 # SEC allows 10 requests a second; stay well under
 NS = "{http://www.sec.gov/edgar/document/absee/autoloan/assetdata}"
 
@@ -44,6 +49,13 @@ FAMILIES = {
     "worldomni": ("World Omni", r"WORLD OMNI|SOUTHEAST TOYOTA", r"^WORLD OMNI AUTO RECEIVABLES TRUST"),
     "carmax": ("CarMax", r"CARMAX", r"^CARMAX AUTO OWNER TRUST"),
 }
+
+# Vehicle value source code (Schedule AL item 3(d)(7)): 1 invoice, 2 MSRP, 3 Kelley Blue Book, 98 other. What "98"
+# means is in each trust's EX-103 notes (checked Oct 2026): a NADA or Kelley Blue Book guide for these lenders.
+# Left out: CarMax and Carvana (their own sale price), Bridgecrest (its cost to buy and recondition), Mercedes
+# (Manheim wholesale), BMW (MSRP for used cars), World Omni (mixed sources).
+GUIDE_98 = {"santander", "exeter", "capitalone", "gmf", "ford"}
+VALUE_MONTHS = 12
 
 def family_of(lien):
     """Family id for a lienholder name, judged on the first name listed. None when it files nothing public."""
@@ -124,25 +136,71 @@ def ex102_url(ua, cik, path):
         name = rest[0] if len(rest) == 1 else None
     return f"{base}/{name}" if name else None
 
-def loans(xml_bytes):
-    """Active loans: (make, model, year, state, balance, payment, months left, period end)."""
+def assets(xml_bytes):
+    """Field getter for each loan in an EX-102 file."""
     for _, el in ET.iterparse(io.BytesIO(xml_bytes), events=("end",)):
-        if el.tag != NS + "assets":
-            continue
-        g = lambda k: (el.findtext(NS + k) or "").strip()
+        if el.tag == NS + "assets":
+            yield lambda k, el=el: (el.findtext(NS + k) or "").strip()
+            el.clear()
+
+def loan_of(g):
+    """Active loan: (make, model, year, state, balance, payment, months left, period end), else None."""
+    try:
+        bal = float(g("reportingPeriodActualEndBalanceAmount") or 0)
+    except ValueError:
+        return None
+    if bal > 0 and g("zeroBalanceCode") in ("", "99") and g("repossessedIndicator") != "true":   # 99: not paid off
         try:
-            bal = float(g("reportingPeriodActualEndBalanceAmount") or 0)
+            return (compact(g("vehicleManufacturerName")), re.sub(r"\s+", " ", g("vehicleModelName").upper()),
+                    int(g("vehicleModelYear") or 0), g("obligorGeographicLocation")[:2], bal,
+                    float(g("reportingPeriodScheduledPaymentAmount") or 0), int(float(g("remainingTermToMaturityNumber") or 0)),
+                    g("reportingPeriodEndingDate"))
         except ValueError:
-            bal = 0
-        if bal > 0 and g("zeroBalanceCode") in ("", "99") and g("repossessedIndicator") != "true":   # 99: not paid off
-            try:
-                yield (compact(g("vehicleManufacturerName")), re.sub(r"\s+", " ", g("vehicleModelName").upper()),
-                       int(g("vehicleModelYear") or 0), g("obligorGeographicLocation")[:2], bal,
-                       float(g("reportingPeriodScheduledPaymentAmount") or 0), int(float(g("remainingTermToMaturityNumber") or 0)),
-                       g("reportingPeriodEndingDate"))
-            except ValueError:
-                pass
-        el.clear()
+            return None
+    return None
+
+def loans(xml_bytes):
+    for g in assets(xml_bytes):
+        ln = loan_of(g)
+        if ln:
+            yield ln
+
+def make_key(name):
+    """One key per make across lenders: CHEVROLET, CHEVROLET TRUCKS and CHEVROLE are all CHEVROLE."""
+    return re.sub(r"(TRUCKS?|MOTORS?|DIVISION)$", "", compact(name))[:8]
+
+def value_of(g, fid):
+    """Used car valued from a pricing guide: (make key, model, year, origination YYYY-MM, value), else None."""
+    src = g("vehicleValueSourceCode")
+    if g("vehicleNewUsedCode") != "2" or not (src == "3" or (src == "98" and fid in GUIDE_98)):
+        return None
+    m = re.fullmatch(r"(\d\d)[/-](?:\d\d[/-])?(\d{4})", g("originationDate"))
+    try:
+        v, yr = float(g("vehicleValueAmount") or 0), int(g("vehicleModelYear") or 0)
+    except ValueError:
+        return None
+    if not m or v < 500 or not yr or (src == "98" and v % 25):
+        return None                  # guide values come in $25 steps; Santander and Exeter also file sale prices as 98
+    return make_key(g("vehicleManufacturerName")), re.sub(r"\s+", " ", g("vehicleModelName").upper()), yr, f"{m[2]}-{m[1]}", v
+
+def month_add(ym, k):
+    y, m = int(ym[:4]), int(ym[5:7]) - 1 + k
+    return f"{y + m // 12}-{m % 12 + 1:02d}"
+
+def value_stats(vals, asof, min_n=5):
+    """Book values from the last VALUE_MONTHS months of loans: make -> year -> model -> stats."""
+    start = month_add(asof[:7], 1 - VALUE_MONTHS)
+    out = {}
+    for (mk, cm, yr), (ms, vs, spell) in vals.items():
+        keep = [(m, v) for m, v in zip(ms, vs) if start <= m <= asof[:7]]
+        if len(keep) < min_n:
+            continue
+        v = [x[1] for x in keep]
+        out.setdefault(mk, {}).setdefault(str(yr), {})[cm] = {
+            "n": len(v), "p25": pct(v, .25), "p50": pct(v, .5), "p75": pct(v, .75),
+            "from": min(x[0] for x in keep), "to": max(x[0] for x in keep),
+            "name": max(spell.items(), key=lambda x: x[1])[0]}
+    return out
 
 def pct(a, p):
     s = sorted(a)
@@ -167,13 +225,25 @@ def main():
     agg = {}                                     # (family, make, model, year) -> [bals, pays, terms, ny_bals]
     names = {}                                   # compact model -> {written name: count}, to show the common spelling
     asof, makes = "", {}
+    vals = {}                                    # (make key, compact model, year) -> [origination months, values, spellings]
+    oldest = month_add(today.isoformat()[:7], -VALUE_MONTHS - 3)
     for name, (fid, cik, date, path) in sorted(filings.items()):
         try:
             url = ex102_url(ua, cik, path)
             if not url:
                 print(f"  {name}: no loan file"); continue
-            n = 0
-            for mk, md, yr, state, bal, pay, left, period in loans(http(url, ua)):
+            n = nv = 0
+            for g in assets(http(url, ua)):
+                vl = value_of(g, fid)
+                if vl and vl[3] >= oldest and vl[2] >= today.year - 25 and compact(vl[1]):
+                    mk, md, yr, ym, v = vl
+                    a = vals.setdefault((mk, compact(md), yr), [[], array.array("f"), {}])
+                    a[0].append(ym); a[1].append(v); a[2][md] = a[2].get(md, 0) + 1
+                    nv += 1
+                ln = loan_of(g)
+                if not ln:
+                    continue
+                mk, md, yr, state, bal, pay, left, period = ln
                 if yr < today.year - 25:
                     continue
                 cm = compact(md)                 # "3-SERIES" and "3 SERIES" are one model
@@ -189,7 +259,7 @@ def main():
                 p = f"{period[6:10]}-{period[0:2]}-{period[3:5]}" if re.fullmatch(r"\d\d-\d\d-\d{4}", period) else ""
                 asof = max(asof, p)
                 n += 1
-            print(f"  {name} {date}: {n} active loans")
+            print(f"  {name} {date}: {n} active loans, {nv} recent used car values")
         except Exception as e:
             print(f"  {name}: failed, {e}")
     old = json.loads(OUT.read_text()) if only and OUT.exists() else {}
@@ -210,6 +280,14 @@ def main():
                                "families": {f: FAMILIES[f][0] for f in stats},
                                "trusts": len(filings) + (old.get("trusts", 0) if old else 0), "stats": stats},
                               separators=(",", ":"), sort_keys=True))
+    if only:
+        print("partial run: value_stats.json needs every lender, left as is")
+    elif vals:
+        vstats = value_stats(vals, asof)
+        VOUT.write_text(json.dumps({"asOf": asof, "built": today.isoformat(), "months": VALUE_MONTHS, "stats": vstats},
+                                   separators=(",", ":"), sort_keys=True))
+        print(f"wrote {VOUT.name}: {sum(len(y) for m in vstats.values() for y in m.values())} model groups from "
+              f"{sum(len(x[1]) for x in vals.values())} used car values")
     print(f"wrote {OUT.name}: {sum(len(y) for f in stats.values() for m in f.values() for y in m.values())} model groups, "
           f"as of {asof}; makes by family: " + ", ".join(f"{f}:{m}" for (f, m), c in sorted(makes.items()) if c > 500)[:600])
     return 0
