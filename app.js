@@ -348,10 +348,10 @@ function card({ a, c }) {
       ${(c.flags || []).map(f => `<div class="flag">${esc(f)}</div>`).join("")}
       ${valueHTML(c)}
       ${lienHTML(a, c)}
-      ${safety}
-      ${feats.length ? `<div class="feats">${feats.map(f => `<span>${esc(f)}</span>`).join("")}</div>` : ""}
       ${histHTML(c)}
-      <details class="more"><summary>Details and links</summary>
+      <details class="more"><summary>Safety and details</summary>
+        <div class="morein">${safety}
+        ${feats.length ? `<div class="feats">${feats.map(f => `<span>${esc(f)}</span>`).join("")}</div>` : ""}</div>
         <dl class="kv">${kv}</dl>${links}${credit}
       </details>
       <label class="note"><span class="sr">Notes for lot ${c.n}</span>

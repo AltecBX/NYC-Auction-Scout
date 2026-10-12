@@ -254,6 +254,8 @@ button,select,input{font:inherit;color:inherit}
 .more summary::after{content:"";width:8px;height:8px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;
   transform:rotate(45deg);margin-left:10px;margin-top:-4px;transition:transform .2s}
 .more[open] summary::after{transform:rotate(225deg);margin-top:4px}
+.morein{display:flex;flex-direction:column;gap:10px;margin:4px 0 10px}
+.morein:empty{display:none}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:4px 0 10px;font-size:.92rem}
 .kv dt{color:var(--ink-2)}
 .kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
